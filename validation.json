@@ -1,0 +1,14 @@
+{
+  "passed": true,
+  "html_pages": 53,
+  "relative_links_checked": 6143,
+  "public_paths_clean": true,
+  "original_books_absent": true,
+  "inline_roundtrip": true,
+  "graphml_counts": [
+    4698,
+    11441
+  ],
+  "book_profiles": 50,
+  "errors": []
+}

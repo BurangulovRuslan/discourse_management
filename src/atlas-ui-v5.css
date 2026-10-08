@@ -1,0 +1,292 @@
+/* Version 5 UI layer. Append after the atlas and book styles; no external assets. */
+:root {
+ --ui-width:1440px;
+ --ui-pad:clamp(18px,3.4vw,54px);
+ --ui-soft:#edf2eb;
+ --ui-soft-strong:#e2ece3;
+ --ui-edge:#d5ddd2;
+ --ui-panel:#fffefa;
+ --ui-radius:12px;
+}
+html {scroll-padding-top:20px}
+body {line-height:1.6;text-rendering:optimizeLegibility}
+button,input,select {border-radius:7px;min-width:0}
+button {line-height:1.3;min-height:40px}
+input,select {min-height:42px;line-height:1.3}
+button:hover {background:var(--ui-soft);border-color:#9cb8a8}
+button.active,button[aria-pressed="true"] {background:var(--accent);border-color:var(--accent);color:var(--surface)}
+button:disabled {cursor:default}
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible {outline:3px solid var(--accent);outline-offset:3px}
+label {font-size:13px;line-height:1.45}
+a {text-decoration-thickness:1px;text-underline-offset:3px}
+
+/* A compact masthead retains the corpus identity and moves work closer to the top. */
+header {
+ padding:24px var(--ui-pad) 18px;
+ border-bottom:1px solid var(--ui-edge);
+ background:linear-gradient(110deg,#f1f3eb 0%,var(--bg) 72%);
+ display:grid;grid-template-columns:minmax(0,1fr);gap:12px;
+}
+header>* {min-width:0;grid-column:1/-1}
+.eyebrow {font-size:11px;letter-spacing:1.3px;line-height:1.5}
+header h1 {font-size:clamp(28px,3vw,40px);font-weight:600;letter-spacing:-.7px;line-height:1.15;margin:0}
+header .subtitle {font-size:15px;line-height:1.6;margin:0;max-width:72ch}
+.metrics {margin:2px 0 0;gap:8px 22px;align-items:baseline;font-size:12px;line-height:1.45;color:var(--muted)}
+.metrics>span {display:inline-flex;align-items:baseline;gap:5px;flex-wrap:wrap}
+.metrics b {font-size:17px;line-height:1.3;color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
+.nav {margin-top:3px;gap:5px;align-items:stretch;flex-wrap:wrap;min-width:0}
+.nav button {font-size:13px;padding:9px 12px;min-height:38px;border-color:transparent;white-space:nowrap}
+.nav button:hover {border-color:var(--ui-edge)}
+.nav button.active {box-shadow:0 2px 0 #d0dfd1}
+.nav-hint {display:none}
+
+/* Global corpus search and graph filtering are visually separate controls. */
+.atlas-searchbar,.corpus-searchbar,.global-searchbar {
+ display:flex;flex-wrap:wrap;align-items:end;gap:10px 12px;
+ background:var(--ui-panel);border:1px solid var(--ui-edge);border-radius:var(--ui-radius);
+ padding:13px 16px;min-width:0;
+}
+.corpus-search-field,.atlas-searchbar .search,.corpus-searchbar .search,.global-searchbar .search {flex:1 1 380px;min-width:0}
+.corpus-search-field input,.atlas-searchbar input[type="search"],.corpus-searchbar input[type="search"],.global-searchbar input[type="search"] {width:100%;margin-top:5px;background:var(--surface);border-color:#b8c9bb}
+.atlas-searchbar button,.corpus-searchbar button,.global-searchbar button {flex:0 0 auto}
+.atlas-searchbar .search-scope,.corpus-searchbar .search-scope,.global-searchbar .search-scope {flex:1 1 100%;font-size:12px;line-height:1.5;margin:0;color:var(--muted)}
+.search-scope-note {flex:0 1 235px;max-width:35ch;font-size:12px;line-height:1.5;margin:0;padding-bottom:3px;color:var(--muted)}
+#reset-all,.reset-all {background:var(--accent);border-color:var(--accent);color:var(--surface);font-weight:600;padding:10px 17px;white-space:nowrap}
+#reset-all:hover,.reset-all:hover {background:#11594f;border-color:#11594f}
+.view-context,#view-context,.graph-context {
+ padding:11px 15px;border-left:3px solid var(--accent);background:var(--ui-soft);
+ border-radius:0 7px 7px 0;font-size:14px;line-height:1.55;min-width:0;overflow-wrap:anywhere;width:100%;flex:1 1 100%;
+}
+.view-context p,#view-context p,.graph-context p {margin:3px 0}
+.context-title {font-size:14px;font-weight:600;color:var(--ink)}
+.context-meta,.context-scope {font-size:12px;color:var(--muted)}
+.context-chips {display:flex;gap:6px 10px;flex-wrap:wrap;margin-top:7px}
+.context-chip {font-size:12px;padding:2px 7px;border:1px solid #c3d3c5;border-radius:5px;background:var(--ui-panel)}
+#graph>.view-context,#graph>#view-context,#graph>.graph-context {width:calc(100% - 2*var(--ui-pad));margin:14px var(--ui-pad) 0}
+
+/* The old flat control row also remains usable until the new wrappers are present. */
+.controls {padding:18px var(--ui-pad) 14px;gap:12px 14px;align-items:end}
+.controls>label {flex:0 1 auto;min-width:0}
+.controls .search {min-width:220px;flex:1 1 280px}
+.controls label select {max-width:320px}
+.controls #book-control {flex:1 1 280px;min-width:0}
+.controls #book-control select {max-width:100%;width:100%}
+.controls-main,.primary-controls {
+ width:100%;display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));
+ align-items:end;gap:12px 14px;min-width:0;
+}
+.controls-main>* ,.primary-controls>* {min-width:0}
+.controls-main label input,.controls-main label select,.primary-controls label input,.primary-controls label select {max-width:100%;width:100%}
+.controls-main #book-control,.primary-controls #book-control {grid-column:span 2}
+.controls-advanced,.advanced-controls {
+ flex:1 1 100%;width:100%;margin:0;border:1px solid var(--ui-edge);
+ background:var(--ui-panel);border-radius:8px;padding:0 13px;min-width:0;
+}
+.controls-advanced>summary,.advanced-controls>summary {
+ padding:11px 0;font-size:13px;line-height:1.5;color:var(--muted);min-height:42px;
+}
+.controls-advanced[open]>summary,.advanced-controls[open]>summary {border-bottom:1px solid var(--ui-edge);color:var(--ink)}
+#graph>.controls-advanced,#graph>.advanced-controls {width:calc(100% - 2*var(--ui-pad));margin:0 var(--ui-pad) 14px}
+#advanced-filters>.controls {display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));padding:14px 0;gap:12px 16px;align-items:end}
+#advanced-filters>.controls>* {min-width:0}
+#advanced-filters>.controls label input,#advanced-filters>.controls label select {width:100%;max-width:100%}
+.filter-state {font-size:12px;font-weight:500;background:var(--ui-soft-strong);color:#2c5643;border-radius:5px;padding:2px 7px;margin-left:8px;white-space:nowrap}
+.filter-state[data-active="false"] {background:transparent;color:var(--muted)}
+.filter-state:empty {display:none}
+.advanced-grid,.controls-advanced-body {
+ display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px 16px;
+ align-items:end;padding:14px 0;min-width:0;
+}
+.advanced-grid>*,.controls-advanced-body>* {min-width:0}
+.advanced-grid input,.advanced-grid select,.controls-advanced-body input,.controls-advanced-body select {width:100%;max-width:100%!important}
+.advanced-grid button,.controls-advanced-body button {white-space:normal}
+.controls-note {grid-column:1/-1;font-size:12px;color:var(--muted);margin:0}
+
+/* Search evidence stays readable and keeps the book/locator above the quotation. */
+.corpus-results,.search-results {
+ min-width:0;max-width:var(--ui-width);width:100%;margin:0;display:grid;gap:14px;
+ max-height:min(65vh,640px);overflow:auto;overscroll-behavior:contain;
+ scrollbar-gutter:stable;scroll-padding:14px;padding:14px;
+ background:var(--ui-panel);border:1px solid var(--ui-edge);border-radius:var(--ui-radius);
+}
+.corpus-results[hidden],.search-results[hidden] {display:none}
+#corpus-result-status {font-size:13px;line-height:1.6;color:var(--muted);padding-bottom:10px;border-bottom:1px solid var(--ui-edge)}
+#corpus-result-body {display:grid;gap:14px;min-width:0}
+#corpus-result-body>h3,.search-node-results h3 {font-size:16px;line-height:1.45;margin:0}
+.search-node-results {display:grid;gap:9px;min-width:0}
+#corpus-more {justify-self:start;max-width:100%;font-size:13px;white-space:normal}
+.corpus-results-header,.search-results-header {display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;justify-content:space-between}
+.corpus-result,.search-result {
+ min-width:0;overflow-wrap:anywhere;background:var(--ui-panel);border:1px solid var(--ui-edge);
+ border-radius:10px;padding:15px 18px;
+}
+.corpus-result h3,.search-result h3 {font-size:16px;line-height:1.5;margin:4px 0 7px}
+.corpus-result h3 button,.search-result h3 button {border:0;padding:0;color:var(--accent);font-size:inherit;text-align:left;min-height:0}
+.result-meta,.search-result-meta {display:flex;flex-wrap:wrap;gap:5px 12px;font-size:12px;color:var(--muted);margin-bottom:6px}
+.result-snippet,.search-snippet,.corpus-result blockquote {font-size:15px;line-height:1.7;margin:8px 0;max-width:92ch}
+.result-actions {display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;margin-top:12px}
+.result-actions button {font-size:13px;min-height:36px;padding:7px 11px}
+mark,.search-highlight {background:#efe0a9;color:var(--ink);padding:0 2px;border-radius:2px}
+.search-empty,.search-progress {padding:16px 0;color:var(--muted);font-size:14px}
+.search-pagination {display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:12px 0}
+
+/* Graph and source pane use one quiet frame instead of several competing toolbars. */
+.graph-layout {padding:0 var(--ui-pad) 26px;grid-template-columns:minmax(0,1fr) minmax(320px,365px);gap:20px}
+.figure {min-width:0}
+.figure canvas {border-color:var(--ui-edge);border-radius:var(--ui-radius)}
+.toolbar {gap:6px;margin-bottom:10px;align-items:center}
+.toolbar button {font-size:13px;min-height:36px;padding:8px 11px}
+#zoom-in,#zoom-out {font-size:20px;padding:4px 12px;line-height:1;min-width:38px}
+.book-tools {margin-bottom:10px;align-items:center}
+.book-tools button {font-size:13px;min-height:36px}
+.book-tools input {font-size:12px}
+.book-tools .small:empty {display:none}
+.aside {
+ padding:18px 20px;max-height:clamp(560px,76vh,860px);border:1px solid var(--ui-edge);
+ border-radius:var(--ui-radius);background:var(--ui-panel);scrollbar-gutter:stable;
+}
+.aside h2 {font-size:22px;line-height:1.35;letter-spacing:-.2px;margin:5px 0 12px}
+.aside h3 {font-size:16px;line-height:1.5;margin:22px 0 9px}
+.aside p {font-size:14px;line-height:1.65}
+.aside .small,.aside .kind {font-size:12px}
+.ref {font-size:13px;line-height:1.6;margin:15px 0;padding-left:13px;border-left:2px solid #bfcec1}
+.ref blockquote {font-size:14px;line-height:1.7;color:#41585a;margin:8px 0;white-space:normal}
+.caution {background:#f3ecdc;border:1px solid #e7dcc2;border-radius:7px;padding:11px 13px;font-size:13px;line-height:1.65}
+.legend {font-size:12px;gap:7px 15px;line-height:1.5}
+.swatch {width:9px;height:9px;flex-shrink:0}
+#graph-status {padding:9px 12px;border:1px solid var(--ui-edge);background:var(--ui-soft);border-radius:7px;font-size:12px}
+.figure>.small {line-height:1.7}
+#chain-caption {margin:12px 0}
+.chips {gap:6px}
+.chips button {font-size:12px;padding:6px 9px;min-height:32px;text-align:left}
+.connection {font-size:13px;padding:10px 0;line-height:1.6}
+.connection button {min-height:0;line-height:1.5}
+
+/* Long reading sections and books share the same restrained card system. */
+.content {max-width:var(--ui-width);padding:26px var(--ui-pad) 60px}
+.content h2 {font-size:clamp(23px,2.3vw,29px);line-height:1.35;letter-spacing:-.3px;margin-top:12px}
+.content .lead {font-size:19px;line-height:1.65;max-width:82ch}
+.prose {max-width:94ch}
+.notice {font-size:14px;line-height:1.7;max-width:96ch}
+.overview {background:var(--ui-soft);border:1px solid var(--ui-edge);border-radius:10px;padding:18px 20px;line-height:1.7}
+.catalogue-filter {padding:15px 16px;background:var(--ui-panel);border:1px solid var(--ui-edge);border-radius:10px;margin:18px 0;gap:12px 16px}
+.catalogue-filter label {min-width:0}
+.catalogue-filter input {min-width:230px}
+.index-grid {gap:18px 24px}
+.index-card,.code-card,.argument-card {padding:18px 0;line-height:1.65}
+.index-card h3,.code-card h3,.argument-card h3 {font-size:18px;line-height:1.45}
+.table-wrap {border:1px solid var(--ui-edge);border-radius:10px;margin-top:16px}
+table {font-size:14px;line-height:1.6}
+th {background:var(--ui-soft);font-size:12px;color:#3f5f51;letter-spacing:.2px}
+th,td {padding:14px 13px;border-bottom-color:var(--ui-edge)}
+tbody tr:last-child td {border-bottom:0}
+.book-controls,.book-compare-controls {margin:18px 0 14px;gap:12px 16px}
+.book-gallery {gap:18px 24px}
+.book-card {padding:18px 20px 12px;background:var(--ui-panel);border:1px solid var(--ui-edge);border-radius:var(--ui-radius)}
+.book-card h3 {font-size:19px;line-height:1.45;margin:12px 0}
+.book-card-meta {font-size:12px;line-height:1.5}
+.book-date-note {font-size:12px;line-height:1.65;min-height:2.7em}
+.book-card-actions {gap:8px 10px}
+.book-card-actions button {font-size:13px;padding:8px 10px;min-height:36px}
+.book-card-actions a {font-size:13px}
+.book-card summary {font-size:13px;line-height:1.6}
+.book-counts {gap:8px 16px}
+.book-counts dt {font-size:12px}
+.book-common-card {padding:20px 0;line-height:1.65}
+.book-common-card h3 {font-size:19px;line-height:1.45}
+.book-evidence-grid {gap:20px}
+.book-evidence-side {padding-left:15px;border-left-color:#bfcfc2}
+.book-evidence-side h4 {font-size:14px;line-height:1.55}
+.book-evidence-side .book-role {font-size:13px;line-height:1.65}
+.book-pair-heading {line-height:1.6}
+summary {line-height:1.55}
+
+@media(min-width:1050px) {
+ header {grid-template-columns:minmax(300px,.8fr) minmax(0,1.2fr);column-gap:36px}
+ header h1 {grid-column:1;grid-row:2;align-self:center}
+ header .subtitle {grid-column:2;grid-row:2;align-self:center}
+}
+@media(max-width:1080px) {
+ .graph-layout {grid-template-columns:1fr;gap:18px}
+ .aside {max-height:none;overflow:visible;scrollbar-gutter:auto}
+ .controls-main #book-control,.primary-controls #book-control {grid-column:auto}
+}
+@media(max-width:760px) {
+ header {padding-top:20px;gap:11px}
+ header h1 {font-size:30px;letter-spacing:-.5px}
+ header .subtitle {font-size:14px;line-height:1.6;max-width:100%}
+ .metrics {gap:6px 17px;font-size:11px}
+ .metrics b {font-size:16px}
+ .nav {flex-wrap:nowrap;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:thin;padding:4px 2px 9px;margin:0 -2px;scroll-padding-inline:12px}
+ .nav button {flex:0 0 auto;font-size:13px;min-height:40px}
+ .nav-hint {display:block;font-size:11px;line-height:1.5;color:var(--muted);margin:-4px 0 0}
+ .atlas-searchbar,.corpus-searchbar,.global-searchbar {padding:12px;gap:9px}
+ .corpus-search-field,.atlas-searchbar .search,.corpus-searchbar .search,.global-searchbar .search {flex-basis:100%}
+ .atlas-searchbar #reset-all,.corpus-searchbar #reset-all,.global-searchbar #reset-all {margin-left:0}
+ .search-scope-note {flex:1 1 150px;padding-bottom:0}
+ .controls {padding-top:14px;gap:10px}
+ .controls-main,.primary-controls {grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 12px}
+ .controls-main .search,.primary-controls .search,.controls-main #book-control,.primary-controls #book-control {grid-column:1/-1}
+ .controls-main label,.primary-controls label {width:auto!important;min-width:0}
+ .controls .search {min-width:0}
+ .advanced-grid,.controls-advanced-body {grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+ #advanced-filters>.controls {grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+ .toolbar button {flex:0 1 auto}
+ .toolbar {gap:6px}
+ .book-tools input {flex-basis:100%}
+ .aside {padding:16px}
+ .book-gallery,.book-evidence-grid {grid-template-columns:1fr}
+ .book-card {padding:16px}
+ .book-card-actions {align-items:center;flex-direction:row}
+ .book-card-actions button {width:auto}
+ .book-date-note {min-height:0}
+ .content .lead {font-size:17px}
+ .index-grid {grid-template-columns:1fr}
+ .catalogue-filter input {min-width:0;width:100%}
+ .catalogue-filter label {width:100%}
+ .corpus-result,.search-result {padding:13px 14px}
+ .result-snippet,.search-snippet,.corpus-result blockquote {font-size:14px}
+ .corpus-results,.search-results {padding:10px;gap:12px;scroll-padding:10px}
+ #corpus-result-body {gap:12px}
+}
+@media(max-width:430px) {
+ .eyebrow {font-size:10px;letter-spacing:.8px}
+ header h1 {font-size:27px}
+ .controls-main,.primary-controls {grid-template-columns:1fr}
+ .controls-main>* ,.primary-controls>* {grid-column:auto!important}
+ .advanced-grid,.controls-advanced-body {grid-template-columns:1fr}
+ #advanced-filters>.controls {grid-template-columns:1fr}
+ .controls .controls-main,.controls .primary-controls,.controls .controls-advanced,.controls .advanced-controls {width:100%}
+ .controls>label {width:100%;flex-basis:100%}
+ .controls>label select {max-width:100%;width:100%}
+ .view-context,#view-context,.graph-context {font-size:13px;padding:10px 12px}
+ .toolbar {display:grid;grid-template-columns:38px 38px minmax(0,1fr)}
+ .toolbar #clear,.toolbar #expand-map {font-size:12px;white-space:normal}
+ .toolbar #clear {grid-column:1/3}
+ .toolbar #expand-map {grid-column:3}
+ .book-card-actions {display:grid;grid-template-columns:1fr}
+ .book-card-actions button {width:100%}
+ .book-card-actions a {margin:4px 0}
+ .book-counts {grid-template-columns:1fr}
+ .book-evidence-side {padding-left:12px}
+ .filter-state {display:inline-block;margin-left:4px;margin-top:3px}
+ .caution {padding:10px 11px;font-size:12px}
+}
+@media(pointer:coarse) {
+ button,input,select {min-height:44px}
+ .nav button,.toolbar button,.chips button,.book-card-actions button,.result-actions button {min-height:44px}
+ summary {padding-top:8px;padding-bottom:8px;min-height:44px}
+ .connection button {min-height:36px}
+}
+@media(prefers-reduced-motion:reduce) {
+ html {scroll-behavior:auto}
+ *,*::before,*::after {animation-duration:.01ms!important;transition-duration:.01ms!important}
+}
+@media print {
+ .atlas-searchbar,.corpus-searchbar,.global-searchbar,#reset-all,.reset-all,.view-context,#view-context {display:none!important}
+ .corpus-result,.search-result,.book-card {background:white;box-shadow:none;border-color:#ccc;break-inside:avoid}
+ .corpus-results,.search-results {max-height:none;overflow:visible;border:0;padding:0}
+ .content {padding:0;max-width:none}
+ .table-wrap {border:0;border-radius:0;overflow:visible}
+ .ref blockquote {color:black}
+}
