@@ -52,6 +52,8 @@ def check(project):
     for path in project.rglob('*'):
         if not path.is_file() or '.git' in path.parts:
             continue
+        if path.suffix.lower() in ('.md','.markdown') and path.relative_to(project).as_posix()!='README.md':
+            errors.append('Only the project README may be included as Markdown: '+str(path.relative_to(project)))
         if path.suffix.lower() in ('.pdf','.fb2','.doc','.docx','.rtf','.epub'):
             originals.append(str(path.relative_to(project)))
         if path.suffix in ('.html','.json','.graphml','.js','.css','.md','.yml'):
