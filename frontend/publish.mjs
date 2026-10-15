@@ -15,7 +15,8 @@ for (const file of await readdir(built, { withFileTypes: true })) {
     await copyFile(path.join(built, file.name), path.join(assets, file.name));
   }
 }
-await copyFile(path.join(root, 'dist/3rdpartylicenses.txt'), path.join(assets, '3rdpartylicenses.txt'));
+const licenses = await readFile(path.join(root, 'dist/3rdpartylicenses.txt'), 'utf8');
+await writeFile(path.join(assets, '3rdpartylicenses.txt'), licenses.replace(/[ \t]+$/gm, ''));
 const html = (await readFile(path.join(built, 'index.html'), 'utf8'))
   .replace(/(src|href)="([^"/]+\.(?:js|css))"/g, '$1="assets/explorer/$2"');
 await writeFile(path.join(site, 'index.html'), html);
