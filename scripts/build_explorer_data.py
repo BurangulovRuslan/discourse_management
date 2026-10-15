@@ -413,7 +413,9 @@ def build_explorer_data(project, data=None):
         if previous.get('layout', {}).get('topology') == topology_signature(nodes, edges):
             positions = {node['id']: node for node in previous['nodes']}
             for node in nodes:
-                node.update({axis: positions[node['id']][axis] for axis in ('x', 'y')})
+                node.update({axis: positions[node['id']][axis]
+                             for axis in ('x', 'y', 'z')
+                             if axis in positions[node['id']]})
             payload['layout'] = previous['layout']
     search = {'version': data['version'], 'references': [
         {**export_reference(row['ref']), 'nodeIds': sorted(row['nodeIds'])}

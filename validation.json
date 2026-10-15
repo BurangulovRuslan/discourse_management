@@ -13,7 +13,7 @@
   "explorer_nodes": 4698,
   "explorer_edges": 11441,
   "dossiers": 4698,
-  "layout_algorithm": "ForceAtlas2",
+  "layout_algorithm": "D3Force3D",
   "search_quotes": 5370,
   "errors": []
 }

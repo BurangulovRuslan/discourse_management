@@ -3,15 +3,16 @@ import { DecimalPipe } from '@angular/common';
 import { IconComponent } from './icon.component';
 import { NetworkComponent } from './network.component';
 import { NodeCoverComponent } from './node-cover.component';
+import { ArchiveSearch, SearchHit } from './archive-search';
 
 interface Book { id:string; title:string; year:number|null; counts:Record<string,number>; connections:string[]; }
-interface AtlasNode { id:string; type:string; label:string; description:string; books:string[]; refIds:number[]; x:number; y:number; degree:number; }
+interface AtlasNode { id:string; type:string; label:string; description:string; books:string[]; refIds:number[]; x:number; y:number; z:number; degree:number; }
 interface Edge { source:string; target:string; analytical:boolean; }
 interface Reference { book:string; locator:string; excerpt:string; paragraphs?:string[]; url:string; nodeIds?:string[]; author?:string; note?:string; }
 interface Atlas { version:string; stats:Record<string,number>; books:Book[]; nodes:AtlasNode[]; edges:Edge[]; references:Reference[]; }
 interface Dossier { description:string; descriptionParagraphs?:string[]; sections:{label:string;text:string;paragraphs?:string[]}[]; }
 interface Dossiers { nodes:Record<string,Dossier>; edges:(Edge & {relation?:string})[]; }
-type IndexMode='all'|'books'|'saved';
+type IndexMode='all'|'books'|'quotes'|'saved';
 
 @Component({selector:'app-root',standalone:true,imports:[IconComponent,NetworkComponent,NodeCoverComponent,DecimalPipe],templateUrl:'./app.component.html'})
 export class AppComponent {
@@ -26,12 +27,16 @@ export class AppComponent {
   readonly journalOpen=signal(false);
   readonly query=signal('');
   readonly visibleLimit=signal(40);
+  readonly quoteResultLimit=signal(20);
   readonly quoteLimit=signal(4);
   readonly connectionLimit=signal(12);
   readonly searchRefs=signal<Reference[]>([]);
   readonly searchLoaded=signal(false);
   readonly searchLoading=signal(false);
   readonly searchError=signal(false);
+  readonly searchRevision=signal(0);
+  readonly contextSearchLoading=signal(false);
+  private readonly archiveSearch=new ArchiveSearch<AtlasNode,Reference>();
   readonly dossiers=signal<Dossiers|null>(null);
   readonly dossierLoading=signal(false);
   readonly dossierError=signal(false);
@@ -73,11 +78,15 @@ export class AppComponent {
     return [...groups.values()].map(g=>({node:g.node,relation:[...g.relations].join(' · '),analytical:g.analytical&&!g.literal,evidence:g.analytical&&g.literal?'Текстовые и аналитические связи':g.analytical?'Аналитическая связь':'Текстовая отсылка'})).sort((a,b)=>b.node.degree-a.node.degree);
   });
   readonly sourceBooks=computed(()=>(this.selected()?.books??[]).map(id=>this.bookMap().get(id)).filter((b):b is Book=>!!b));
-  readonly indexedNodes=computed(()=>{
-    const q=this.normalize(this.query().trim()),mode=this.indexMode();
-    return this.nodes().filter(n=>(mode!=='books'||n.type==='book')&&(mode!=='saved'||this.saved().includes(n.id))&&(!q||this.normalize(n.label+' '+n.description).includes(q))).sort((a,b)=>q?Number(this.normalize(b.label).includes(q))-Number(this.normalize(a.label).includes(q))||b.degree-a.degree:b.degree-a.degree);
+  readonly nodeHits=computed(()=>{
+    this.searchRevision();const q=this.query().trim(),mode=this.indexMode();
+    if(mode==='quotes')return [];
+    if(q)return this.archiveSearch.searchNodes(q,{types:mode==='books'?['book']:undefined,ids:mode==='saved'?this.saved():undefined});
+    return this.nodes().filter(n=>(mode!=='books'||n.type==='book')&&(mode!=='saved'||this.saved().includes(n.id))).sort((a,b)=>b.degree-a.degree).map(item=>({item,id:item.id,score:0,snippet:'',matchedTerms:[],matchKind:'exact',explanation:'',parts:[]} as SearchHit<AtlasNode>));
   });
-  readonly foundQuotes=computed(()=>{const q=this.normalize(this.query().trim());return q.length<2||this.indexMode()!=='all'?[]:this.searchRefs().filter(r=>this.normalize(r.excerpt).includes(q)).slice(0,20);});
+  readonly indexedNodes=computed(()=>this.nodeHits().map(hit=>hit.item));
+  readonly quoteHits=computed(()=>{this.searchRevision();const q=this.query().trim();return q.length<2||!['all','quotes'].includes(this.indexMode())?[]:this.archiveSearch.searchQuotes(q,{limit:this.quoteResultLimit()+1});});
+  readonly searchInterpretation=computed(()=>this.archiveSearch.interpretation(this.query()));
   readonly dialogOpen=computed(()=>this.indexOpen()||this.aboutOpen()||this.journalOpen());
   @ViewChild('indexInput') indexInput?:ElementRef<HTMLInputElement>;
   @ViewChild(NetworkComponent) network?:NetworkComponent;
@@ -87,19 +96,19 @@ export class AppComponent {
   constructor(){void this.load();}
   normalize(value:string){return value.toLocaleLowerCase('ru').replaceAll('ё','е');}
   readSaved():string[]{try{const v=JSON.parse(localStorage.getItem('atlas-saved')||'[]');return Array.isArray(v)?v.filter(id=>typeof id==='string'):[];}catch{return [];}}
-  async load(){this.loadError.set(false);try{const r=await fetch('explorer-data.json');if(!r.ok)throw new Error();this.data.set(await r.json());this.applyHash();}catch{this.loadError.set(true);}}
+  async load(){this.loadError.set(false);try{const r=await fetch('explorer-data.json');if(!r.ok)throw new Error();const data:Atlas=await r.json();this.archiveSearch.addNodes(data.nodes,data.books);this.searchRevision.update(v=>v+1);this.data.set(data);this.applyHash();}catch{this.loadError.set(true);}}
   async loadSearch(){
     if(this.searchLoaded()||this.searchLoading())return;this.searchLoading.set(true);this.searchError.set(false);
-    try{const r=await fetch('explorer-search.json');if(!r.ok)throw new Error();this.searchRefs.set((await r.json()).references);this.searchLoaded.set(true);}catch{this.searchError.set(true);}finally{this.searchLoading.set(false);}
+    try{const refs=await this.archiveSearch.loadQuotes();this.searchRefs.set(refs);this.searchRevision.update(v=>v+1);this.searchLoaded.set(true);}catch{this.searchError.set(true);}finally{this.searchLoading.set(false);}
   }
   async loadDossiers(){
     if(this.dossiers()||this.dossierLoading())return;this.dossierLoading.set(true);this.dossierError.set(false);
-    try{const r=await fetch('explorer-dossiers.json');if(!r.ok)throw new Error();this.dossiers.set(await r.json());}catch{this.dossierError.set(true);}finally{this.dossierLoading.set(false);}
+    try{const r=await fetch('explorer-dossiers.json');if(!r.ok)throw new Error();const dossiers:Dossiers=await r.json();this.dossiers.set(dossiers);this.contextSearchLoading.set(true);try{await this.archiveSearch.addDossiers(dossiers);this.searchRevision.update(v=>v+1);}finally{this.contextSearchLoading.set(false);}}catch{this.dossierError.set(true);}finally{this.dossierLoading.set(false);}
   }
-  openIndex(mode:IndexMode='all'){this.captureFocus();this.aboutOpen.set(false);this.journalOpen.set(false);this.indexMode.set(mode);this.query.set('');this.visibleLimit.set(40);this.indexOpen.set(true);setTimeout(()=>this.indexInput?.nativeElement.focus());void this.loadSearch();}
+  openIndex(mode:IndexMode='all'){this.captureFocus();this.aboutOpen.set(false);this.journalOpen.set(false);this.indexMode.set(mode);this.query.set('');this.visibleLimit.set(40);this.indexOpen.set(true);setTimeout(()=>this.indexInput?.nativeElement.focus());void this.loadSearch();void this.loadDossiers();}
   changeIndex(mode:IndexMode){this.indexMode.set(mode);this.visibleLimit.set(40);}
-  updateQuery(value:string){this.query.set(value);this.visibleLimit.set(40);}
-  more(kind:'nodes'|'quotes'|'connections'){if(kind==='nodes')this.visibleLimit.update(v=>v+40);else if(kind==='quotes')this.quoteLimit.update(v=>v+8);else this.connectionLimit.update(v=>v+12);}
+  updateQuery(value:string){this.query.set(value);this.visibleLimit.set(40);this.quoteResultLimit.set(20);}
+  more(kind:'nodes'|'quotes'|'connections'|'quoteResults'){if(kind==='nodes')this.visibleLimit.update(v=>v+40);else if(kind==='quotes')this.quoteLimit.update(v=>v+8);else if(kind==='quoteResults')this.quoteResultLimit.update(v=>v+20);else this.connectionLimit.update(v=>v+12);}
   openAbout(){this.captureFocus();this.indexOpen.set(false);this.journalOpen.set(false);this.aboutOpen.set(true);setTimeout(()=>document.getElementById('about-close')?.focus());}
   select(id:string,push=true){
     if(!this.nodeMap().has(id))return;this.captureFocus();this.selectedId.set(id);this.indexOpen.set(false);this.aboutOpen.set(false);this.journalOpen.set(true);this.quoteLimit.set(4);this.connectionLimit.set(12);this.shareState.set('');this.shareFallback.set('');
@@ -118,7 +127,7 @@ export class AppComponent {
   scrollArticle(id:string){document.getElementById(id)?.scrollIntoView({block:'start'});}
   @HostListener('window:hashchange') @HostListener('window:popstate') applyHash(){
     const m=location.hash.match(/^#(?:node|book)=(.+)$/);let id='';try{id=m?decodeURIComponent(m[1]):'';}catch{/* Ignore malformed addresses. */}
-    if(this.nodeMap().has(id))this.select(id,false);else{this.selectedId.set(null);this.journalOpen.set(false);}
+    if(this.nodeMap().has(id))this.select(id,false);else{const wasOpen=this.journalOpen();this.selectedId.set(null);this.journalOpen.set(false);if(wasOpen)this.focusMap();}
   }
   @HostListener('document:keydown',['$event']) keydown(event:KeyboardEvent){
     if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='k'){event.preventDefault();this.openIndex();}

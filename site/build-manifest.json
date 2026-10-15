@@ -47,7 +47,7 @@
     "lexical_candidate_edges": 296
   },
   "file_count": 64,
-  "bytes": 141293135,
+  "bytes": 141926750,
   "files": [
     {
       "path": ".nojekyll",
@@ -61,18 +61,18 @@
     },
     {
       "path": "assets/explorer/3rdpartylicenses.txt",
-      "bytes": 14956,
-      "sha256": "deafbddf5e9576823901b9e3df2d456e44b583deba9505e2cc821e11445ee449"
+      "bytes": 17319,
+      "sha256": "e7e9d6aeb7a9e39a1b7fcd453add75db35d2240e1f96044a7aad2e024aeb399f"
     },
     {
-      "path": "assets/explorer/main-NCNMLXBR.js",
-      "bytes": 215310,
-      "sha256": "5d48d7ef653dbe42324eba2d09986bafcdc84567b2eec886bae807c157a85efb"
+      "path": "assets/explorer/main-TPFKCG75.js",
+      "bytes": 791110,
+      "sha256": "c0a4f2cce88b55128f141132e2c6733d21ee5f8df8239ebe07a010ccd49800d6"
     },
     {
-      "path": "assets/explorer/styles-U5PILLDR.css",
-      "bytes": 32925,
-      "sha256": "619b9b0a0207e8c1635001fc2aa7231f84638fdf7062badf54f8197beeccb9d8"
+      "path": "assets/explorer/styles-664OVMXC.css",
+      "bytes": 44414,
+      "sha256": "e6046d005d7706d9a3dd6e44630c225a5645f1d652355e22c13e73121cab2f9d"
     },
     {
       "path": "atlas-data.json",
@@ -86,8 +86,8 @@
     },
     {
       "path": "explorer-data.json",
-      "bytes": 3024688,
-      "sha256": "c7f1b5143276ce4947c7126ab86908a7e4dd8f1a338991a137f1894bd139afee"
+      "bytes": 3068541,
+      "sha256": "1458516b0b1f7fe16fae4c23f0a1752888ce8548b61d5a10e1d5969969bd1958"
     },
     {
       "path": "explorer-dossiers.json",
@@ -101,8 +101,8 @@
     },
     {
       "path": "index.html",
-      "bytes": 1696,
-      "sha256": "aa3284688c18525b668ee2c28dd7f16d0f826a4a31a8a19ee5811ef4b065a5ce"
+      "bytes": 1806,
+      "sha256": "9b77ef0c064e894af3c4756e452d1d6a07e571e53bcde415eb5e02f4e53b695a"
     },
     {
       "path": "kurpatov.graphml",

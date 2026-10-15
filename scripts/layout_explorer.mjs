@@ -1,124 +1,77 @@
-/**
- * Build the actual graph's deterministic, single-plane ForceAtlas2 layout.
- * Only build-time dependencies are used; browsers download ready coordinates.
- */
+/** Build one deterministic, topological 3D layout of the entire actual corpus. */
 import { readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 
 const project = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(path.join(project, 'frontend/package.json'));
-const { MultiDirectedGraph } = require('graphology');
-const forceAtlas2 = require('graphology-layout-forceatlas2');
+const { forceSimulation, forceLink, forceManyBody, forceCollide, forceCenter, forceX, forceY, forceZ } =
+  await import(pathToFileURL(require.resolve('d3-force-3d')).href);
 const target = path.join(project, 'site/explorer-data.json');
 const data = JSON.parse(await readFile(target, 'utf8'));
-const identity = [
-  ...data.nodes.map(node => node.id),
-  ...data.edges.map(edge => `${edge.source}|${edge.target}|${Number(edge.analytical)}`),
-].join('\n');
+const identity = [...data.nodes.map(node => node.id), ...data.edges.map(edge => `${edge.source}|${edge.target}|${Number(edge.analytical)}`)].join('\n');
 const topology = createHash('sha256').update(identity).digest('hex');
-const iterations = 1000;
-const settings = {
-  ...forceAtlas2.inferSettings(data.nodes.length),
-  barnesHutOptimize: true,
-  barnesHutTheta: 0.5,
-  linLogMode: true,
-  gravity: 0.05,
-  scalingRatio: 12,
-  slowDown: 8,
-};
-const revision = 'forceatlas2-0.10.1-cover-packing-v2';
-// A cover has a real footprint in the map. Leave enough breathing room for
-// connection lines and the small, shared motion field used in the browser.
-const cover = { width: 168, height: 224, gapX: 80, gapY: 80 };
-const spacingX = cover.width + cover.gapX + 0.5;
-const spacingY = cover.height + cover.gapY + 0.5;
-if (!process.argv.includes('--force') && data.layout?.topology === topology &&
-    data.layout?.revision === revision && data.nodes.every(node => Number.isFinite(node.x) && Number.isFinite(node.y))) {
-  console.log(`Graph layout unchanged: ${data.nodes.length} nodes, ${data.edges.length} real edges.`);
+const revision = 'd3-force-3d-3.0.6-organic-v1';
+if (!process.argv.includes('--force') && data.layout?.topology === topology && data.layout?.revision === revision
+    && data.layout?.dimensions === 3 && data.nodes.every(n => ['x', 'y', 'z'].every(axis => Number.isFinite(n[axis])))) {
+  console.log(`3D graph layout unchanged: ${data.nodes.length} nodes, ${data.edges.length} real edges.`);
   process.exit(0);
 }
 
-const graph = new MultiDirectedGraph({ allowSelfLoops: true });
-const seedPosition = id => {
-  const bytes = createHash('sha256').update(`atlas-layout-v1:${id}`).digest();
-  const angle = bytes.readUInt32LE(0) / 0x100000000 * Math.PI * 2;
-  const radius = Math.sqrt((bytes.readUInt32LE(4) + 0.5) / 0x100000000) * 150;
-  return { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius };
-};
-for (const node of data.nodes) graph.addNode(node.id, seedPosition(node.id));
-for (let index = 0; index < data.edges.length; index++) {
-  const edge = data.edges[index];
-  graph.addDirectedEdgeWithKey(String(index), edge.source, edge.target, { weight: 1 });
+const degree = new Map(data.nodes.map(n => [n.id, 0]));
+for (const edge of data.edges) {
+  if (!degree.has(edge.source) || !degree.has(edge.target)) throw new Error('Graph edge references a missing actual node');
+  degree.set(edge.source, degree.get(edge.source) + 1); degree.set(edge.target, degree.get(edge.target) + 1);
 }
-console.log(`Computing ForceAtlas2 on ${graph.order} nodes and ${graph.size} real edges (${iterations} iterations)…`);
+const nodes = data.nodes.map(node => {
+  const bytes = createHash('sha256').update(`atlas-3d:${node.id}`).digest();
+  const azimuth = bytes.readUInt32LE(0) / 0x100000000 * Math.PI * 2;
+  const elevation = bytes.readUInt32LE(4) / 0x100000000 * 2 - 1;
+  const radius = Math.cbrt((bytes.readUInt32LE(8) + .5) / 0x100000000) * 900;
+  const ring = Math.sqrt(1 - elevation * elevation) * radius;
+  return { id: node.id, degree: degree.get(node.id), x: Math.cos(azimuth) * ring, y: elevation * radius, z: Math.sin(azimuth) * ring };
+});
+const links = data.edges.map(edge => ({ source: edge.source, target: edge.target, analytical: edge.analytical }));
+let seed = 0x5eeda71a;
+const random = () => ((seed = Math.imul(seed, 1664525) + 1013904223 >>> 0) / 0x100000000);
+const iterations = 720;
+const simulation = forceSimulation(nodes, 3).stop().randomSource(random)
+  .alphaDecay(1 - Math.pow(.001, 1 / iterations)).velocityDecay(.38)
+  .force('links', forceLink(links).id(n => n.id).distance(230)
+    .strength(edge => .26 / Math.sqrt(Math.max(1, Math.min(edge.source.degree, edge.target.degree)))))
+  .force('charge', forceManyBody().strength(n => -320 * (1 + Math.log1p(n.degree) * .12)).theta(.9).distanceMax(4000))
+  .force('collision', forceCollide().radius(n => 82 + Math.sqrt(n.degree) * .6).strength(.7).iterations(2))
+  .force('center', forceCenter(0, 0, 0))
+  .force('x', forceX(0).strength(.0014)).force('y', forceY(0).strength(.0014)).force('z', forceZ(0).strength(.0014));
 const started = performance.now();
-const positions = forceAtlas2(graph, { iterations, settings });
-const xs = Object.values(positions).map(position => position.x);
-const ys = Object.values(positions).map(position => position.y);
-if ([...xs, ...ys].some(value => !Number.isFinite(value))) throw new Error('Layout produced invalid coordinates');
-const minX = Math.min(...xs), maxX = Math.max(...xs);
-const minY = Math.min(...ys), maxY = Math.max(...ys);
-const extent = 36000;
-const scale = extent / Math.max(maxX - minX, maxY - minY);
-const centerX = (minX + maxX) / 2, centerY = (minY + maxY) / 2;
-const rounded = value => Math.round(value * 100) / 100;
-const desired = new Map();
-for (const node of data.nodes) {
-  const position = positions[node.id];
-  desired.set(node.id, { x: extent / 2 + (position.x - centerX) * scale,
-    y: extent / 2 + (position.y - centerY) * scale });
-  node.degree = graph.degree(node.id);
+console.log(`Computing one 3D force simulation: ${nodes.length} nodes, ${links.length} real edges, ${iterations} iterations…`);
+for (let i = 0; i < iterations; i++) {
+  simulation.tick();
+  if ((i + 1) % 120 === 0) console.log(`3D layout ${i + 1}/${iterations}; ${((performance.now() - started) / 1000).toFixed(1)}s`);
 }
-
-// Keep the topology's organic distribution, then move each cover to the
-// nearest free position along a deterministic, continuous golden-angle spiral.
-// The result is a single plane, not a grid or separate layers by node type.
-const buckets = new Map();
-const key = (x, y) => `${x},${y}`;
-const cell = (x, y) => [Math.floor(x / spacingX), Math.floor(y / spacingY)];
-const occupied = (x, y) => {
-  const [cx, cy] = cell(x, y);
-  for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
-    for (const other of buckets.get(key(cx + dx, cy + dy)) ?? []) {
-      if (Math.abs(x - other.x) < spacingX && Math.abs(y - other.y) < spacingY) return true;
-    }
+simulation.stop();
+const lengths = links.map(e => Math.hypot(e.source.x - e.target.x, e.source.y - e.target.y, e.source.z - e.target.z)).filter(v => v > 0).sort((a, b) => a - b);
+const scale = 460 / (lengths[Math.floor(lengths.length / 2)] || 460);
+const rounded = value => Math.round(value * 100) / 100;
+const byId = new Map(nodes.map(n => [n.id, n]));
+for (const node of data.nodes) {
+  const position = byId.get(node.id);
+  for (const axis of ['x', 'y', 'z']) {
+    node[axis] = rounded(position[axis] * scale);
+    if (!Number.isFinite(node[axis])) throw new Error(`Invalid 3D coordinate: ${node.id}`);
   }
-  return false;
-};
-let displaced = 0, maxDisplacement = 0;
-const goldenAngle = Math.PI * (3 - Math.sqrt(5));
-for (const node of [...data.nodes].sort((a, b) => b.degree - a.degree || a.id.localeCompare(b.id, 'en'))) {
-  const origin = desired.get(node.id);
-  let x = origin.x, y = origin.y, attempt = 0;
-  const phase = createHash('sha256').update(`cover-packing:${node.id}`).digest().readUInt32LE(0) / 0x100000000 * Math.PI * 2;
-  while (occupied(x, y)) {
-    attempt++;
-    if (attempt > 100000) throw new Error(`No free cover position for ${node.id}`);
-    const radius = Math.sqrt(attempt) * 32;
-    const angle = phase + attempt * goldenAngle;
-    x = origin.x + Math.cos(angle) * radius;
-    y = origin.y + Math.sin(angle) * radius;
-  }
-  node.x = rounded(x); node.y = rounded(y);
-  if (attempt) displaced++;
-  maxDisplacement = Math.max(maxDisplacement, Math.hypot(x - origin.x, y - origin.y));
-  const [cx, cy] = cell(node.x, node.y), bucketKey = key(cx, cy);
-  if (!buckets.has(bucketKey)) buckets.set(bucketKey, []);
-  buckets.get(bucketKey).push(node);
+  node.degree = position.degree;
 }
 data.layout = {
-  algorithm: 'ForceAtlas2', revision, topology, iterations,
-  nodes: graph.order, edges: graph.size,
-  packing: { method: 'continuous-golden-angle', ...cover, displaced, maxDisplacement: rounded(maxDisplacement) },
-  bounds: {
-    minX: Math.min(...data.nodes.map(node => node.x)),
-    maxX: Math.max(...data.nodes.map(node => node.x)),
-    minY: Math.min(...data.nodes.map(node => node.y)),
-    maxY: Math.max(...data.nodes.map(node => node.y)),
-  },
+  algorithm: 'D3Force3D', dimensions: 3, revision, topology, iterations,
+  nodes: nodes.length, edges: links.length,
+  settings: { linkDistance: 230, medianEdgeLength: 460, collisionRadius: 82, charge: -320, seed: 'atlas-3d' },
+  bounds: Object.fromEntries(['x', 'y', 'z'].flatMap(axis => [
+    [`min${axis.toUpperCase()}`, Math.min(...data.nodes.map(n => n[axis]))],
+    [`max${axis.toUpperCase()}`, Math.max(...data.nodes.map(n => n[axis]))],
+  ])),
 };
 await writeFile(target, JSON.stringify(data), 'utf8');
-console.log(`Layout saved in ${((performance.now() - started) / 1000).toFixed(1)}s; bounds ${JSON.stringify(data.layout.bounds)}.`);
+console.log(`3D layout saved in ${((performance.now() - started) / 1000).toFixed(1)}s. Bounds ${JSON.stringify(data.layout.bounds)}`);

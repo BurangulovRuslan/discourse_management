@@ -1,58 +1,136 @@
 import {
-  AfterViewInit, ChangeDetectionStrategy, ChangeDetectorRef, Component, ElementRef,
-  EventEmitter, HostBinding, Input, NgZone, OnChanges, OnDestroy, Output, SimpleChanges, ViewChild,
+  AfterViewInit, ChangeDetectionStrategy, ChangeDetectorRef, Component, ElementRef, EventEmitter,
+  HostBinding, Input, NgZone, OnChanges, OnDestroy, Output, SimpleChanges, ViewChild,
 } from '@angular/core';
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { paintCover } from './cover-art';
 
-export interface NetworkNode { id: string; type: string; label: string; x: number; y: number; degree: number; }
+export interface NetworkNode { id: string; type: string; label: string; x: number; y: number; z?: number; degree: number; }
 export interface NetworkEdge { source: string; target: string; analytical: boolean; }
-interface Camera { x: number; y: number; scale: number; }
-interface Position { x: number; y: number; }
-interface ProjectedNode extends Position { node: NetworkNode; index: number; w: number; h: number; heat: number; }
-interface ResolvedEdge { source: number; target: number; analytical: boolean; }
-interface PointerState extends Position { startX: number; startY: number; moved: boolean; }
+interface ActualCurve { source: number; target: number; a: THREE.Vector3; b: THREE.Vector3; c: THREE.Vector3; d: THREE.Vector3; analytical: boolean; length: number; }
+interface ProjectedNode { index: number; id: string; x: number; y: number; w: number; h: number; depth: number; }
 interface AccessibleCover { id: string; label: string; x: number; y: number; w: number; h: number; }
-interface CoverTheme { paper: string; ink: string; accent: string; rule: string; }
+interface DetailCover { sprite: THREE.Sprite; texture: THREE.CanvasTexture; material: THREE.SpriteMaterial; node: NetworkNode; }
+interface CameraFlight { fromEye: THREE.Vector3; toEye: THREE.Vector3; fromTarget: THREE.Vector3; toTarget: THREE.Vector3; started: number; duration: number; }
 
-const COVER_WIDTH = 168;
-const COVER_HEIGHT = 224;
-const THEMES: CoverTheme[] = [
-  { paper: '#171612', ink: '#eee0c7', accent: '#bd8057', rule: '#7c5d45' },
-  { paper: '#c9b79a', ink: '#221c15', accent: '#5c3b27', rule: '#75634d' },
-  { paper: '#50372a', ink: '#ebd5b8', accent: '#d19e70', rule: '#967151' },
-  { paper: '#111211', ink: '#d1bfa5', accent: '#9e7253', rule: '#6d6455' },
-  { paper: '#dfceb2', ink: '#30251c', accent: '#8d4f31', rule: '#aa8f6f' },
-  { paper: '#29231c', ink: '#e0c8a9', accent: '#b98761', rule: '#806449' },
-];
+const COVER_W = 168, COVER_H = 224, ATLAS_SIZE = 2048, TILE_W = 24, TILE_H = 32, DETAIL_BUDGET = 24, CURVE_STEPS = 10;
+// The same field is evaluated by graph vertices, spline vertices, particles and CPU hit targets.
+const WAVE_GLSL = `
+  vec3 flowing(vec3 p) {
+    return p + vec3(sin(p.y*.0019+uTime*.34)*7.0+sin(p.x*.0011+uTime*.2414)*2.5,
+      cos(p.x*.0017+uTime*.2992)*6.5+sin(p.y*.0013+uTime*.2176)*2.5,
+      sin(p.x*.0013+p.y*.0011+uTime*.265)*8.0) * uMotion;
+  }
+`;
+const CARD_VERTEX = `
+  uniform float uTime; uniform float uMotion; uniform float uHeight;
+  attribute vec3 aCenter; attribute vec2 aTile; attribute float aHeat; attribute float aVisible;
+  varying vec2 vUv; varying float vHeat; varying float vSize; varying float vDepth; varying float vVisible;
+  ${WAVE_GLSL}
+  void main() {
+    vec4 center = modelViewMatrix * vec4(flowing(aCenter),1.0);
+    float size = 224.0 * projectionMatrix[1][1] * uHeight*.5 / max(1.0,-center.z);
+    float cap = min(1.0,276.0/max(1.0,size));
+    center.xy += position.xy * cap * (1.0 + .022 * min(aHeat,1.0));
+    // Reject distant paper in the vertex stage, avoiding thousands of large
+    // transparent/discarded quads on the GPU; every node still has its point.
+    gl_Position = aVisible<.5 || size<74.0 ? vec4(2.0,2.0,2.0,1.0) : projectionMatrix * center;
+    vUv = aTile + uv * vec2(22.0/2048.0,30.0/2048.0);
+    vHeat=aHeat; vSize=min(276.0,size); vDepth=-center.z; vVisible=aVisible;
+  }
+`;
+const CARD_FRAGMENT = `
+  uniform sampler2D uAtlas; uniform float uFog;
+  varying vec2 vUv; varying float vHeat; varying float vSize; varying float vDepth; varying float vVisible;
+  void main() {
+    // The overview is a neural point-and-spline cloud. Opaque paper is reserved
+    // for the explicitly decluttered, readable foreground neighborhood.
+    if(vSize<74.0 || vVisible<.5) discard;
+    vec4 paper=texture2D(uAtlas,vUv);
+    float light = mix(.26,1.0,smoothstep(12.0,110.0,vSize));
+    float fog = max(.18,exp(-vDepth/uFog));
+    gl_FragColor = vec4(paper.rgb*light*fog,paper.a);
+    #include <colorspace_fragment>
+  }
+`;
+const LINE_VERTEX = `
+  uniform float uTime; uniform float uMotion;
+  attribute float aKind; attribute float aDistance;
+  varying float vKind; varying float vDistance; varying float vDepth;
+  ${WAVE_GLSL}
+  void main(){vec4 p=modelViewMatrix*vec4(flowing(position),1.0);gl_Position=projectionMatrix*p;vKind=aKind;vDistance=aDistance;vDepth=-p.z;}
+`;
+const LINE_FRAGMENT = `
+  uniform vec3 uColor; uniform float uOpacity; uniform float uFog;
+  varying float vKind; varying float vDistance; varying float vDepth;
+  void main(){if(vKind>.5 && mod(vDistance,36.0)>20.0) discard;
+    gl_FragColor=vec4(uColor,uOpacity*max(.15,exp(-vDepth/uFog)));
+    #include <colorspace_fragment>
+  }
+`;
+const POINT_VERTEX = `
+  uniform float uTime; uniform float uMotion; uniform float uDpr;
+  attribute float aDegree; attribute float aHeat;
+  varying float vHeat; varying float vDepth;
+  ${WAVE_GLSL}
+  void main(){vec4 p=modelViewMatrix*vec4(flowing(position),1.0);gl_Position=projectionMatrix*p;
+    gl_PointSize=uDpr*(1.65+min(3.5,log(1.0+aDegree)*.52)+aHeat*1.5);vHeat=aHeat;vDepth=-p.z;}
+`;
+const POINT_FRAGMENT = `
+  uniform float uFog;
+  varying float vHeat; varying float vDepth;
+  void main(){float r=length(gl_PointCoord-vec2(.5));if(r>.5)discard;
+    vec3 color=mix(vec3(.34,.42,.47),vec3(1.0,.79,.36),min(1.0,vHeat));
+    gl_FragColor=vec4(color,pow(1.0-r*2.0,1.4)*max(.15,exp(-vDepth/uFog))*(.55+vHeat*.3));
+    #include <colorspace_fragment>
+  }
+`;
+const PARTICLE_VERTEX = `
+  uniform float uTime; uniform float uMotion; uniform float uDpr; uniform float uSize;
+  attribute vec3 aStart; attribute vec3 aC1; attribute vec3 aC2; attribute vec3 aEnd;
+  attribute float aPhase; attribute float aSpeed;
+  ${WAVE_GLSL}
+  void main(){float t=fract(aPhase+uTime*.038*aSpeed);float s=1.0-t;
+    vec3 p=s*s*s*aStart+3.0*s*s*t*aC1+3.0*s*t*t*aC2+t*t*t*aEnd;
+    gl_Position=projectionMatrix*modelViewMatrix*vec4(flowing(p),1.0);gl_PointSize=uDpr*uSize;}
+`;
+const PARTICLE_FRAGMENT = `
+  uniform float uOpacity;
+  void main(){float r=length(gl_PointCoord-vec2(.5));if(r>.5)discard;
+    gl_FragColor=vec4(vec3(1.0,.77,.27),pow(1.0-r*2.0,1.1)*uOpacity);
+    #include <colorspace_fragment>
+  }
+`;
 
-/** Every supplied graph node is a magazine cover in the same continuous graph plane. */
 @Component({
   selector: 'app-network', standalone: true, changeDetection: ChangeDetectionStrategy.OnPush,
   host: {
     tabindex: '0', role: 'region',
-    'aria-label': 'Карта журналов. Перемещайте карту, открывайте обложки. Стрелки — перемещение, плюс и минус — масштаб, ноль — вся сеть. Tab — видимые обложки. Поиск всех материалов: Ctrl K.',
+    'aria-label': 'Трёхмерная ризома. Мышь вращает, правая кнопка или Shift перемещает, колесо приближает. Стрелки перемещают, A D W S вращают, плюс и минус меняют масштаб, ноль показывает всю сеть. Tab — видимые обложки, Enter — открыть. Поиск всех материалов: Ctrl K.',
     '(keydown)': 'onKeydown($event)',
   },
   template: `
     <canvas #surface aria-hidden="true"></canvas>
     <div class="accessible-covers" aria-label="Материалы в видимой области">
-      @for (cover of accessibleCovers; track cover.id) {
+      @for(cover of accessibleCovers;track cover.id){
         <button class="cover-keyboard-target" [style.left.px]="cover.x" [style.top.px]="cover.y"
-          [style.width.px]="cover.w" [style.height.px]="cover.h"
-          [attr.aria-label]="cover.label" (focus)="focusCover(cover.id)" (blur)="blurCover()"
-          (click)="selectNode(cover.id)"></button>
+          [style.width.px]="cover.w" [style.height.px]="cover.h" [attr.aria-label]="cover.label"
+          (focus)="focusCover(cover.id)" (blur)="blurCover()" (click)="selectNode(cover.id)"></button>
       }
     </div>
-    <span class="network-status" aria-live="polite">{{ status }}</span>
+    @if(renderError){<div class="render-error" role="status"><strong>Для 3D-карты нужен WebGL.</strong><span>Все материалы доступны через указатель и поиск.</span></div>}
+    <span class="network-status" aria-live="polite">{{status}}</span>
   `,
   styles: `
-    :host { display: block; position: relative; width: 100%; height: 100%; min-height: 0; overflow: hidden; background: #0e0e0d; outline: none; }
-    :host:focus-visible { box-shadow: inset 0 0 0 1px #b07c58; }
-    canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
-    canvas:active { cursor: grabbing; }
-    .accessible-covers { position: absolute; inset: 0; pointer-events: none; }
-    .cover-keyboard-target { position: absolute; display: block; padding: 0; border: 0; border-radius: 0; opacity: 0; background: transparent; pointer-events: none; }
-    .cover-keyboard-target:focus-visible { opacity: 1; outline: 2px solid #efc69c; outline-offset: 5px; box-shadow: 0 0 24px #efc69c33; }
-    .network-status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    :host{display:block;position:relative;width:100%;height:100%;min-height:0;overflow:hidden;background:#090c10;outline:none}
+    :host:focus-visible{box-shadow:inset 0 0 0 1px #c4a36c}
+    canvas{display:block;width:100%;height:100%;touch-action:none;cursor:grab}canvas:active{cursor:grabbing}
+    .accessible-covers{position:absolute;inset:0;pointer-events:none}
+    .cover-keyboard-target{position:absolute;display:block;padding:0;border:0;border-radius:0;opacity:0;background:transparent;pointer-events:none}
+    .cover-keyboard-target:focus-visible{opacity:1;outline:2px solid #e9c36d;outline-offset:5px;box-shadow:0 0 24px #e7c77733}
+    .network-status{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+    .render-error{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:18px;text-align:center;padding:25px;color:#d2c6b2;font:13px Georgia,serif}.render-error strong{font-size:25px;font-weight:400}
   `,
 })
 export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
@@ -61,590 +139,518 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
   @Input() activeId: string | null = null;
   @Input() focusId: string | null = null;
   @Input() motionPaused = false;
-  @Input() zoomAction: { kind: 'in' | 'out' | 'fit'; seq: number } | null = null;
+  @Input() zoomAction: {kind:'in'|'out'|'fit';seq:number}|null = null;
   @Output() nodeSelect = new EventEmitter<string>();
-  @Output() viewportChange = new EventEmitter<{ zoom: number }>();
-  @HostBinding('attr.data-node-count') get nodeCount(): number { return this.nodes.length; }
-  @HostBinding('attr.data-edge-count') get edgeCount(): number { return this.edges.length; }
-  @HostBinding('attr.data-cover-count') get coverCount(): number { return this.nodes.length; }
-  @HostBinding('attr.data-visible-cover-count') visibleCoverCount = 0;
-  @HostBinding('attr.data-camera-scale') cameraScale = 1;
-  @HostBinding('attr.data-motion') motionState = 'running';
-  @ViewChild('surface', { static: true }) private surface!: ElementRef<HTMLCanvasElement>;
-  accessibleCovers: AccessibleCover[] = [];
-  status = '';
+  @Output() viewportChange = new EventEmitter<{zoom:number}>();
+  @HostBinding('attr.data-node-count') get nodeCount(){return this.nodes.length;}
+  @HostBinding('attr.data-edge-count') get edgeCount(){return this.edges.length;}
+  @HostBinding('attr.data-cover-count') get coverCount(){return this.nodes.length;}
+  @HostBinding('attr.data-dimensions') readonly dimensions=3;
+  @HostBinding('attr.data-renderer') rendererState='initializing';
+  @HostBinding('attr.data-visible-cover-count') visibleCoverCount=0;
+  @HostBinding('attr.data-detail-cover-count') detailCoverCount=0;
+  @HostBinding('attr.data-camera-scale') cameraScale=1;
+  @HostBinding('attr.data-camera-distance') cameraDistance=0;
+  @HostBinding('attr.data-motion') motionState='running';
+  @HostBinding('attr.data-atlas-ready') atlasReady=false;
+  @ViewChild('surface',{static:true}) private surface!:ElementRef<HTMLCanvasElement>;
+  accessibleCovers:AccessibleCover[]=[];
+  status=''; renderError=false;
 
-  private ctx: CanvasRenderingContext2D | null = null;
-  private resizeObserver: ResizeObserver | null = null;
-  private cleanup: (() => void)[] = [];
-  private width = 0;
-  private height = 0;
-  private dpr = 1;
-  private frame = 0;
-  private lastFrameTime = 0;
-  private motionTime = 0;
-  private lastDomUpdate = 0;
-  private initialized = false;
-  private started = false;
-  private destroyed = false;
-  private reducedMotion = false;
-  private camera: Camera = { x: 0, y: 0, scale: .9 };
-  private targetCamera: Camera = { x: 0, y: 0, scale: .9 };
-  private fittedCamera: Camera = { x: 0, y: 0, scale: .04 };
-  private orderedNodes: NetworkNode[] = [];
-  private nodeById = new Map<string, NetworkNode>();
-  private nodeIndex = new Map<string, number>();
-  private resolvedEdges: ResolvedEdge[] = [];
-  private adjacency = new Map<string, Set<string>>();
-  private projected: ProjectedNode[] = [];
-  private visible: ProjectedNode[] = [];
-  private hoveredId: string | null = null;
-  private keyboardId: string | null = null;
-  private hoverHeat = new Map<string, number>();
-  private pointers = new Map<number, PointerState>();
-  private pinchDistance = 0;
-  private lastPinchMid: Position | null = null;
-  private lastZoom = -1;
-  private textures = new Map<string, HTMLCanvasElement>();
-  private titleLayouts = new Map<string, { lines: string[]; size: number; lineHeight: number }>();
+  private renderer:THREE.WebGLRenderer|null=null;
+  private scene=new THREE.Scene();
+  private camera=new THREE.PerspectiveCamera(42,1,1,100000);
+  private controls:OrbitControls|null=null;
+  private graph=new THREE.Group();
+  private width=0;private height=0;private dpr=1;
+  private frame=0;private lastFrame=0;private elapsed=0;private lastProjection=0;private lastDom=0;
+  private initialized=false;private started=false;private destroyed=false;private reduced=false;
+  private resizeObserver:ResizeObserver|null=null;private cleanup:(()=>void)[]=[];
+  private timeUniform={value:0};private motionUniform={value:1};
+  private nodeMap=new Map<string,NetworkNode>();private indices=new Map<string,number>();
+  private adjacency=new Map<string,Set<string>>();private positions:THREE.Vector3[]=[];
+  private curves:ActualCurve[]=[];private projected:ProjectedNode[]=[];private foreground:ProjectedNode[]=[];
+  private nodeHeat:THREE.InstancedBufferAttribute|null=null;private cardVisibility:THREE.InstancedBufferAttribute|null=null;
+  private pointHeat:THREE.BufferAttribute|null=null;
+  private highlight:THREE.LineSegments|null=null;private activeParticles:THREE.Points|null=null;
+  private baseLines:THREE.LineSegments|null=null;
+  private sourceFrame:THREE.Sprite|null=null;private sourceFrameTexture:THREE.CanvasTexture|null=null;
+  private details=new Map<string,DetailCover>();private hoveredId:string|null=null;private keyboardId:string|null=null;
+  private textureCache=new Map<string,THREE.CanvasTexture>();private pendingDetails:ProjectedNode[]=[];
+  private highlightId:string|null=null;private atlas:THREE.CanvasTexture|null=null;private atlasTimer:ReturnType<typeof setTimeout>|null=null;
+  private atlasGeneration=0;private center=new THREE.Vector3();private radius=2000;private fitDistance=6000;
+  private flight:CameraFlight|null=null;private controlsMoving=false;private lastControlChange=0;
+  private pointerStart:{x:number;y:number;id:number}|null=null;private pointerMoved=false;
+  private pointerIds=new Set<number>();private multiPointer=false;
+  private lastZoom=-1;private temp=new THREE.Vector3();private viewTemp=new THREE.Vector3();private ndc=new THREE.Vector3();
+  private inverseView=new THREE.Matrix4();private right=new THREE.Vector3();private up=new THREE.Vector3();
 
-  constructor(private readonly zone: NgZone, private readonly cdr: ChangeDetectorRef) {}
+  constructor(private zone:NgZone,private cdr:ChangeDetectorRef){}
 
-  ngAfterViewInit(): void {
-    const canvas = this.surface.nativeElement;
-    this.ctx = canvas.getContext('2d', { alpha: false });
-    this.initialized = true;
-    this.rebuildGraph();
-    this.zone.runOutsideAngular(() => {
-      this.listen(canvas, 'wheel', e => this.onWheel(e as WheelEvent), { passive: false });
-      this.listen(canvas, 'pointerdown', e => this.onPointerDown(e as PointerEvent));
-      this.listen(canvas, 'pointermove', e => this.onPointerMove(e as PointerEvent));
-      this.listen(canvas, 'pointerup', e => this.onPointerUp(e as PointerEvent));
-      this.listen(canvas, 'pointercancel', e => this.onPointerCancel(e as PointerEvent));
-      this.listen(canvas, 'pointerleave', () => { if (!this.pointers.size) this.setHovered(null); });
-      this.listen(document, 'visibilitychange', () => {
-        this.lastFrameTime = 0;
-        this.updateMotionState();
-        if (!document.hidden) this.requestDraw();
-      });
-      const media = window.matchMedia('(prefers-reduced-motion: reduce)');
-      this.reducedMotion = media.matches;
-      const changed = () => { this.reducedMotion = media.matches; this.updateMotionState(); this.requestDraw(); };
-      media.addEventListener('change', changed);
-      this.cleanup.push(() => media.removeEventListener('change', changed));
-      this.resizeObserver = new ResizeObserver(() => this.resize());
-      this.resizeObserver.observe(canvas);
-      this.updateMotionState();
-      this.resize();
+  ngAfterViewInit():void{
+    const canvas=this.surface.nativeElement;
+    try{
+      this.renderer=new THREE.WebGLRenderer({canvas,antialias:true,alpha:false,powerPreference:'high-performance'});
+      this.renderer.outputColorSpace=THREE.SRGBColorSpace;this.renderer.setClearColor(0x090c10,1);
+      this.rendererState='webgl';
+    }catch{
+      this.renderError=true;this.rendererState='unavailable';this.cdr.markForCheck();return;
+    }
+    this.scene.background=new THREE.Color(0x090c10);this.scene.add(this.graph);
+    this.camera.position.set(1500,900,2600);
+    this.controls=new OrbitControls(this.camera,canvas);
+    this.controls.enableDamping=true;this.controls.dampingFactor=.09;this.controls.rotateSpeed=.55;
+    this.controls.panSpeed=.72;this.controls.zoomSpeed=.75;this.controls.zoomToCursor=true;
+    this.controls.minDistance=200;this.controls.maxDistance=50000;this.controls.autoRotateSpeed=.14;
+    this.controls.addEventListener('start',()=>{this.flight=null;this.controlsMoving=true;this.requestDraw();});
+    this.controls.addEventListener('end',()=>{this.controlsMoving=false;this.lastControlChange=performance.now();this.requestDraw();});
+    this.controls.addEventListener('change',()=>{this.lastControlChange=performance.now();this.requestDraw();});
+    this.initialized=true;
+    this.zone.runOutsideAngular(()=>{
+      const media=window.matchMedia('(prefers-reduced-motion: reduce)');this.reduced=media.matches;
+      const changed=()=>{this.reduced=media.matches;if(this.controls)this.controls.enableDamping=!this.reduced;this.updateMotion();this.requestDraw();};
+      media.addEventListener('change',changed);this.cleanup.push(()=>media.removeEventListener('change',changed));
+      this.listen(canvas,'pointerdown',e=>this.onPointerDown(e as PointerEvent));
+      this.listen(canvas,'pointermove',e=>this.onPointerMove(e as PointerEvent));
+      this.listen(canvas,'pointerup',e=>this.onPointerUp(e as PointerEvent));
+      this.listen(canvas,'pointerleave',()=>{if(!this.controlsMoving&&!this.keyboardId)this.setHovered(null);});
+      this.listen(canvas,'pointercancel',e=>{this.pointerIds.delete((e as PointerEvent).pointerId);this.pointerStart=null;this.pointerMoved=true;if(!this.pointerIds.size)this.multiPointer=false;});
+      this.listen(canvas,'webglcontextlost',e=>{e.preventDefault();this.rendererState='lost';this.renderError=true;this.cdr.markForCheck();});
+      this.listen(canvas,'webglcontextrestored',()=>{this.rendererState='webgl';this.renderError=false;this.cdr.markForCheck();this.requestDraw();});
+      this.listen(document,'visibilitychange',()=>{this.lastFrame=0;this.updateMotion();if(!document.hidden)this.requestDraw();});
+      this.resizeObserver=new ResizeObserver(()=>this.resize());this.resizeObserver.observe(canvas);
+      this.rebuildGraph();this.resize();this.updateMotion();
     });
   }
 
-  ngOnChanges(changes: SimpleChanges): void {
-    if (!this.initialized) return;
-    if (changes['nodes'] || changes['edges']) this.rebuildGraph();
-    if (changes['focusId'] && this.focusId) this.focusNode(this.focusId);
-    if (changes['zoomAction'] && this.zoomAction) {
-      if (this.zoomAction.kind === 'fit') this.fit(true);
-      else this.zoomAt(this.width / 2, this.height / 2, this.zoomAction.kind === 'in' ? 1.35 : 1 / 1.35);
+  ngOnChanges(changes:SimpleChanges):void{
+    if(!this.initialized)return;
+    if(changes['nodes']||changes['edges'])this.rebuildGraph();
+    if(changes['activeId'])this.updateHighlight();
+    if(changes['focusId']&&this.focusId)this.focusNode(this.focusId);
+    if(changes['zoomAction']&&this.zoomAction){
+      if(this.zoomAction.kind==='fit')this.fit();else this.zoom(this.zoomAction.kind==='in'?1/1.35:1.35);
     }
-    if (changes['motionPaused']) { this.lastFrameTime = 0; this.updateMotionState(); }
+    if(changes['motionPaused']){this.lastFrame=0;this.updateMotion();}
     this.requestDraw();
   }
 
-  ngOnDestroy(): void {
-    this.destroyed = true;
-    this.resizeObserver?.disconnect();
-    this.cleanup.forEach(fn => fn());
-    cancelAnimationFrame(this.frame);
-    this.textures.clear();
+  ngOnDestroy():void{
+    this.destroyed=true;cancelAnimationFrame(this.frame);this.resizeObserver?.disconnect();
+    this.cleanup.forEach(fn=>fn());this.controls?.dispose();this.atlasGeneration++;
+    if(this.atlasTimer)clearTimeout(this.atlasTimer);this.disposeGraph();this.renderer?.dispose();
   }
 
-  typeLabel(type: string): string {
-    const labels: Record<string, string> = {
-      book: 'Книга', theme: 'Тема', construct: 'Понятие', thinker: 'Автор', experiment: 'Эпизод',
-      code: 'Тематический код', proposition: 'Тезис', chain_step: 'Аргумент', trajectory_stage: 'Стадия понятия',
-      work: 'Работа', citation: 'Библиография', concept: 'Концепт', author: 'Автор', idea: 'Идея', quote: 'Цитата',
-    };
-    return labels[type] ?? type;
+  selectNode(id:string):void{this.zone.run(()=>this.nodeSelect.emit(id));}
+  focusCover(id:string):void{this.keyboardId=id;this.setHovered(id);}
+  blurCover():void{this.keyboardId=null;this.setHovered(null);}
+  typeLabel(type:string):string{
+    const labels:Record<string,string>={book:'Книга',theme:'Тема',construct:'Понятие',thinker:'Автор',experiment:'Эпизод',code:'Код',proposition:'Тезис',chain_step:'Аргумент',trajectory_stage:'Стадия понятия',work:'Работа',citation:'Библиография'};
+    return labels[type]??type;
   }
 
-  private connectionCount(value: number): string {
-    const n = Math.abs(value) % 100, last = n % 10;
-    const label = n > 10 && n < 20 ? 'связей' : last === 1 ? 'связь' : last >= 2 && last <= 4 ? 'связи' : 'связей';
-    return `${value} ${label}`;
+  /** A genuine 3D neighborhood; the article selection does not choose the entry point. */
+  readMap():void{
+    const anchor=this.readingAnchor();if(anchor!==undefined)this.flyTo(this.positions[anchor],this.readingDistance());
+    this.setHovered(null);this.status='Область чтения. Вращайте пространство и открывайте обложки.';
   }
 
-  selectNode(id: string): void { this.zone.run(() => this.nodeSelect.emit(id)); }
-  focusCover(id: string): void { this.keyboardId = id; this.setHovered(id); }
-  blurCover(): void { this.keyboardId = null; this.setHovered(null); }
+  focusNode(id:string):void{
+    const index=this.indices.get(id);if(index===undefined||!this.controls)return;
+    this.flyTo(this.positions[index],this.readingDistance());
+    this.setHovered(null);this.updateHighlight(id);
+    const node=this.nodes[index];this.status=`${node.label}. Связей: ${node.degree}. Enter — открыть материал.`;
+  }
 
-  onKeydown(event: KeyboardEvent): void {
-    if (event.target !== event.currentTarget) return;
-    const distance = (event.shiftKey ? 210 : 90) / this.targetCamera.scale;
-    const pans: Record<string, Position> = {
-      ArrowLeft: { x: -distance, y: 0 }, ArrowRight: { x: distance, y: 0 },
-      ArrowUp: { x: 0, y: -distance }, ArrowDown: { x: 0, y: distance },
-    };
-    if (pans[event.key]) {
-      event.preventDefault();
-      this.targetCamera.x += pans[event.key].x;
-      this.targetCamera.y += pans[event.key].y;
-      this.setHovered(null);
-      this.requestDraw();
-    } else if (['+', '=', '-', '_', '0', 'Enter', 'Escape'].includes(event.key)) {
-      event.preventDefault();
-      if (event.key === '0') this.fit(true);
-      else if (event.key === 'Enter') {
-        const id = this.keyboardId ?? this.hoveredId ?? this.activeId ?? this.nearestCenter()?.id;
-        if (id) this.selectNode(id);
-      } else if (event.key === 'Escape') this.setHovered(null);
-      else this.zoomAt(this.width / 2, this.height / 2, ['+', '='].includes(event.key) ? 1.3 : 1 / 1.3);
+  onKeydown(event:KeyboardEvent):void{
+    if(event.target!==event.currentTarget||!this.controls)return;
+    const key=event.key.toLowerCase();
+    if(['arrowleft','arrowright','arrowup','arrowdown','a','d','w','s','+','=','-','_','0','enter','escape'].includes(key))event.preventDefault();else return;
+    if(key==='0')this.fit();
+    else if(key==='enter'){const id=this.keyboardId??this.hoveredId??this.activeId??this.foreground[0]?.id;if(id)this.selectNode(id);}
+    else if(key==='escape')this.setHovered(null);
+    else if(['+','=','-','_'].includes(key))this.zoom(['+','='].includes(key)?1/1.3:1.3);
+    else if(['a','d','w','s'].includes(key)){
+      this.flight=null;const offset=this.camera.position.clone().sub(this.controls.target);
+      const axis=['a','d'].includes(key)?new THREE.Vector3(0,1,0):new THREE.Vector3(1,0,0).applyQuaternion(this.camera.quaternion);
+      offset.applyAxisAngle(axis,(key==='a'||key==='w'?1:-1)*.065);this.camera.position.copy(this.controls.target).add(offset);this.controls.update();
+    }else{
+      this.flight=null;const amount=this.camera.position.distanceTo(this.controls.target)*(event.shiftKey?.17:.065);
+      this.right.setFromMatrixColumn(this.camera.matrixWorld,0);this.up.setFromMatrixColumn(this.camera.matrixWorld,1);
+      const delta=key==='arrowleft'?this.right.multiplyScalar(-amount):key==='arrowright'?this.right.multiplyScalar(amount):key==='arrowup'?this.up.multiplyScalar(amount):this.up.multiplyScalar(-amount);
+      this.camera.position.add(delta);this.controls.target.add(delta);this.controls.update();
     }
-  }
-
-  private listen(target: EventTarget, name: string, fn: EventListener, options?: AddEventListenerOptions): void {
-    target.addEventListener(name, fn, options);
-    this.cleanup.push(() => target.removeEventListener(name, fn, options));
-  }
-
-  private rebuildGraph(): void {
-    this.nodeById = new Map(this.nodes.map(node => [node.id, node]));
-    this.nodeIndex = new Map(this.nodes.map((node, index) => [node.id, index]));
-    this.orderedNodes = [...this.nodes].sort((a, b) => b.degree - a.degree || a.id.localeCompare(b.id));
-    this.resolvedEdges = [];
-    this.adjacency.clear();
-    this.textures.clear();
-    this.titleLayouts.clear();
-    for (const edge of this.edges) {
-      const source = this.nodeIndex.get(edge.source), target = this.nodeIndex.get(edge.target);
-      if (source === undefined || target === undefined) continue;
-      this.resolvedEdges.push({ source, target, analytical: edge.analytical });
-      if (!this.adjacency.has(edge.source)) this.adjacency.set(edge.source, new Set());
-      if (!this.adjacency.has(edge.target)) this.adjacency.set(edge.target, new Set());
-      this.adjacency.get(edge.source)!.add(edge.target);
-      this.adjacency.get(edge.target)!.add(edge.source);
-    }
-    if (this.hoveredId && !this.nodeById.has(this.hoveredId)) this.setHovered(null);
-    this.updateFitCamera();
-    if (!this.started) this.startReadingView();
     this.requestDraw();
   }
 
-  private resize(): void {
-    const rect = this.surface.nativeElement.getBoundingClientRect();
-    if (rect.width < 1 || rect.height < 1) return;
-    const wasAtFit = this.started && Math.abs(this.targetCamera.scale / this.fittedCamera.scale - 1) < .02;
-    this.width = rect.width; this.height = rect.height;
-    this.dpr = Math.min(window.devicePixelRatio || 1, 2);
-    this.surface.nativeElement.width = Math.round(this.width * this.dpr);
-    this.surface.nativeElement.height = Math.round(this.height * this.dpr);
-    this.updateFitCamera();
-    if (!this.started) this.startReadingView();
-    else if (wasAtFit) this.fit(false);
-    this.requestDraw();
+  private listen(target:EventTarget,name:string,fn:EventListener):void{target.addEventListener(name,fn);this.cleanup.push(()=>target.removeEventListener(name,fn));}
+  private updateMotion():void{
+    this.motionState=this.reduced?'reduced':document.hidden?'hidden':this.motionPaused?'paused':'running';
+    if(this.controls)this.controls.enableDamping=!this.reduced;
+    this.motionUniform.value=this.reduced?0:1;
+    this.zone.run(()=>this.cdr.markForCheck());
   }
 
-  /** Return to a dense, central reading neighborhood, independently of article selection. */
-  readMap(): void {
-    this.startReadingView(true, false);
-    this.setHovered(null);
-    this.status = 'Центральная область карты. Открывайте обложки и переходите по связям.';
-  }
-
-  private startReadingView(animate = false, useFocus = true): void {
-    if (!this.nodes.length || !this.width || !this.height) return;
-    const preferred = useFocus && this.focusId ? this.nodeById.get(this.focusId) : null;
-    const centerX = this.fittedCamera.x, centerY = this.fittedCamera.y;
-    // Choose a real, connected editorial entry point near the corpus center.
-    const anchor = preferred ?? [...this.orderedNodes].filter(n => n.type === 'theme' || n.type === 'construct')
-      .sort((a, b) => Math.hypot(a.x - centerX, a.y - centerY) - Math.hypot(b.x - centerX, b.y - centerY))[0] ?? this.orderedNodes[0];
-    const scale = Math.max(.64, Math.min(.95, this.height / 790, this.width / 1200));
-    this.started = true;
-    this.moveCamera({ x: anchor.x - this.width * .035 / scale, y: anchor.y, scale }, animate);
-  }
-
-  private updateFitCamera(): void {
-    if (!this.nodes.length || !this.width || !this.height) return;
-    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    for (const node of this.nodes) {
-      if (!Number.isFinite(node.x) || !Number.isFinite(node.y)) continue;
-      minX = Math.min(minX, node.x - COVER_WIDTH / 2 - 6); maxX = Math.max(maxX, node.x + COVER_WIDTH / 2 + 6);
-      minY = Math.min(minY, node.y - COVER_HEIGHT / 2 - 6); maxY = Math.max(maxY, node.y + COVER_HEIGHT / 2 + 6);
+  private rebuildGraph():void{
+    this.disposeGraph();this.graph=new THREE.Group();this.scene.add(this.graph);
+    this.nodeMap=new Map(this.nodes.map(n=>[n.id,n]));this.indices=new Map(this.nodes.map((n,i)=>[n.id,i]));
+    this.adjacency.clear();this.positions=this.nodes.map(n=>new THREE.Vector3(n.x,n.y,n.z??0));
+    const bounds=new THREE.Box3().setFromPoints(this.positions);bounds.getCenter(this.center);
+    this.radius=Math.max(600,...this.positions.map(position=>position.distanceTo(this.center)));
+    const halfFov=THREE.MathUtils.degToRad(this.camera.fov/2);this.fitDistance=this.radius/Math.sin(halfFov)*1.12;
+    this.camera.far=Math.max(100000,this.fitDistance*12);this.camera.updateProjectionMatrix();
+    if(this.controls)this.controls.maxDistance=this.fitDistance*3;
+    for(const edge of this.edges){
+      if(!this.indices.has(edge.source)||!this.indices.has(edge.target))continue;
+      if(!this.adjacency.has(edge.source))this.adjacency.set(edge.source,new Set());
+      if(!this.adjacency.has(edge.target))this.adjacency.set(edge.target,new Set());
+      this.adjacency.get(edge.source)!.add(edge.target);this.adjacency.get(edge.target)!.add(edge.source);
     }
-    if (!Number.isFinite(minX)) return;
-    const padX = Math.min(70, this.width * .05), padY = Math.min(55, this.height * .07);
-    this.fittedCamera = {
-      x: (minX + maxX) / 2, y: (minY + maxY) / 2,
-      scale: Math.min((this.width - padX * 2) / Math.max(1, maxX - minX), (this.height - padY * 2) / Math.max(1, maxY - minY)),
-    };
+    this.buildCurves();this.buildAtlas();this.buildNodeMesh();this.buildSourceFrame();
+    this.baseLines=this.createLines(this.curves,false);this.graph.add(this.baseLines);
+    const ambientCurves=this.curves.filter((_,i)=>i%37===0);this.graph.add(this.createParticles(ambientCurves,false));
+    this.updateHighlight();
+    if(!this.started&&this.width&&this.height)this.startView();
+    this.lastProjection=0;this.requestDraw();
   }
 
-  private fit(animate: boolean): void {
-    if (!this.nodes.length || !this.width || !this.height) return;
-    this.updateFitCamera();
-    this.moveCamera({ ...this.fittedCamera }, animate);
-    this.setHovered(null);
-  }
-
-  focusNode(id: string): void {
-    const node = this.nodeById.get(id);
-    if (!node || !this.width || !this.height) return;
-    const scale = Math.max(.95, Math.min(1.3, this.height / 570));
-    this.moveCamera({ x: node.x, y: node.y, scale }, true);
-    this.status = `${node.label}. ${this.connectionCount(node.degree)}. Нажмите Enter, чтобы открыть материал.`;
-    this.setHovered(null);
-  }
-
-  private moveCamera(target: Camera, animate: boolean): void {
-    this.targetCamera = { ...target };
-    if (!animate || this.reducedMotion) this.camera = { ...target };
-    this.emitViewport(); this.requestDraw();
-  }
-
-  private zoomAt(x: number, y: number, factor: number): void {
-    const previousScale = this.targetCamera.scale;
-    const nextScale = Math.min(2.4, Math.max(this.fittedCamera.scale * .4, previousScale * factor));
-    this.targetCamera.x += (x - this.width / 2) * (1 / previousScale - 1 / nextScale);
-    this.targetCamera.y += (y - this.height / 2) * (1 / previousScale - 1 / nextScale);
-    this.targetCamera.scale = nextScale;
-    if (this.reducedMotion || this.pointers.size > 1) this.camera = { ...this.targetCamera };
-    this.setHovered(null); this.requestDraw();
-  }
-
-  private emitViewport(): void {
-    const zoom = Math.round(this.camera.scale / this.fittedCamera.scale * 100) / 100;
-    if (zoom === this.lastZoom) return;
-    this.lastZoom = zoom;
-    this.zone.run(() => this.viewportChange.emit({ zoom }));
-  }
-
-  private pointerPosition(event: PointerEvent | WheelEvent): Position {
-    const rect = this.surface.nativeElement.getBoundingClientRect();
-    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
-  }
-
-  private onWheel(event: WheelEvent): void {
-    event.preventDefault();
-    const pos = this.pointerPosition(event);
-    const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? this.height : 1);
-    this.zoomAt(pos.x, pos.y, Math.exp(-Math.max(-160, Math.min(160, delta)) * .0019));
-  }
-
-  private onPointerDown(event: PointerEvent): void {
-    if (event.button !== 0) return;
-    const pos = this.pointerPosition(event);
-    (this.surface.nativeElement.parentElement as HTMLElement)?.focus({ preventScroll: true });
-    this.surface.nativeElement.setPointerCapture(event.pointerId);
-    this.pointers.set(event.pointerId, { ...pos, startX: pos.x, startY: pos.y, moved: false });
-    if (this.pointers.size > 1) { for (const pointer of this.pointers.values()) pointer.moved = true; this.beginPinch(); }
-  }
-
-  private beginPinch(): void {
-    const [a, b] = [...this.pointers.values()];
-    if (!a || !b) return;
-    this.pinchDistance = Math.hypot(a.x - b.x, a.y - b.y);
-    this.lastPinchMid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-  }
-
-  private onPointerMove(event: PointerEvent): void {
-    const pos = this.pointerPosition(event), pointer = this.pointers.get(event.pointerId);
-    if (!pointer) { if (!this.keyboardId) this.setHovered(this.hitTest(pos.x, pos.y)?.id ?? null); return; }
-    const previous = { x: pointer.x, y: pointer.y };
-    pointer.x = pos.x; pointer.y = pos.y;
-    if (Math.hypot(pos.x - pointer.startX, pos.y - pointer.startY) > 4) pointer.moved = true;
-    if (this.pointers.size > 1) {
-      const [a, b] = [...this.pointers.values()];
-      const distance = Math.hypot(a.x - b.x, a.y - b.y), middle = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-      if (this.pinchDistance > 0) this.zoomAt(middle.x, middle.y, distance / this.pinchDistance);
-      if (this.lastPinchMid) {
-        this.targetCamera.x -= (middle.x - this.lastPinchMid.x) / this.targetCamera.scale;
-        this.targetCamera.y -= (middle.y - this.lastPinchMid.y) / this.targetCamera.scale;
-        this.camera = { ...this.targetCamera };
-      }
-      this.pinchDistance = distance; this.lastPinchMid = middle;
-    } else if (pointer.moved) {
-      this.targetCamera.x -= (pos.x - previous.x) / this.targetCamera.scale;
-      this.targetCamera.y -= (pos.y - previous.y) / this.targetCamera.scale;
-      // Follow the pointer directly while dragging; the release retains a small soft tail.
-      this.camera.x += (this.targetCamera.x - this.camera.x) * .78;
-      this.camera.y += (this.targetCamera.y - this.camera.y) * .78;
-    }
-    if (pointer.moved || this.pointers.size > 1) { this.setHovered(null); this.requestDraw(); }
-  }
-
-  private onPointerUp(event: PointerEvent): void {
-    const pointer = this.pointers.get(event.pointerId), pos = this.pointerPosition(event);
-    this.pointers.delete(event.pointerId);
-    if (this.surface.nativeElement.hasPointerCapture(event.pointerId)) this.surface.nativeElement.releasePointerCapture(event.pointerId);
-    if (pointer && !pointer.moved && !this.pointers.size) { const node = this.hitTest(pos.x, pos.y); if (node) this.selectNode(node.id); }
-    if (this.pointers.size < 2) { this.pinchDistance = 0; this.lastPinchMid = null; }
-    if (event.pointerType === 'mouse') this.setHovered(this.hitTest(pos.x, pos.y)?.id ?? null);
-    this.requestDraw();
-  }
-
-  private onPointerCancel(event: PointerEvent): void { this.pointers.delete(event.pointerId); this.pinchDistance = 0; this.lastPinchMid = null; }
-  private setHovered(id: string | null): void {
-    if (this.hoveredId === id) return;
-    this.hoveredId = id;
-    if (id && !this.hoverHeat.has(id)) this.hoverHeat.set(id, 0);
-    this.surface.nativeElement.style.cursor = id ? 'pointer' : 'grab';
-    this.requestDraw();
-  }
-
-  private hitTest(x: number, y: number): NetworkNode | null {
-    // Rectangles, rather than decorative point targets: every visible cover is clickable.
-    for (let i = this.visible.length - 1; i >= 0; i--) {
-      const p = this.visible[i];
-      if (Math.abs(x - p.x) <= Math.max(3, p.w / 2) && Math.abs(y - p.y) <= Math.max(4, p.h / 2)) return p.node;
-    }
-    return null;
-  }
-
-  private nearestCenter(): NetworkNode | null {
-    let candidate: NetworkNode | null = null, distance = Infinity;
-    for (const p of this.visible) {
-      const next = Math.hypot(p.x - this.width / 2, p.y - this.height / 2);
-      if (next < distance) { distance = next; candidate = p.node; }
-    }
-    return candidate;
-  }
-
-  private updateMotionState(): void {
-    this.motionState = this.reducedMotion ? 'reduced' : document.hidden ? 'hidden' : this.motionPaused ? 'paused' : 'running';
-    this.zone.run(() => this.cdr.markForCheck());
-  }
-
-  private requestDraw(): void {
-    if (!this.initialized || this.destroyed || this.frame || document.hidden) return;
-    this.zone.runOutsideAngular(() => { this.frame = requestAnimationFrame(now => { this.frame = 0; this.draw(now); }); });
-  }
-
-  private draw(now: number): void {
-    const ctx = this.ctx;
-    if (!ctx || !this.width || !this.height || document.hidden) return;
-    const dt = this.lastFrameTime ? Math.min(50, now - this.lastFrameTime) : 16;
-    this.lastFrameTime = now;
-    const ambient = !this.reducedMotion && !this.motionPaused;
-    if (ambient) this.motionTime += dt;
-    const ease = this.reducedMotion ? 1 : 1 - Math.exp(-dt / 105);
-    const cameraMoving = Math.abs(this.camera.x - this.targetCamera.x) * this.camera.scale > .015
-      || Math.abs(this.camera.y - this.targetCamera.y) * this.camera.scale > .015 || Math.abs(Math.log(this.camera.scale / this.targetCamera.scale)) > .00015;
-    if (cameraMoving) {
-      this.camera.x += (this.targetCamera.x - this.camera.x) * ease;
-      this.camera.y += (this.targetCamera.y - this.camera.y) * ease;
-      this.camera.scale = Math.exp(Math.log(this.camera.scale) + (Math.log(this.targetCamera.scale) - Math.log(this.camera.scale)) * ease);
-      this.emitViewport();
-    } else this.camera = { ...this.targetCamera };
-    let hoverMoving = false;
-    for (const [id, heat] of this.hoverHeat) {
-      const target = id === this.hoveredId ? 1 : 0;
-      const next = this.reducedMotion ? target : heat + (target - heat) * (1 - Math.exp(-dt / 150));
-      if (Math.abs(next - target) > .005) hoverMoving = true;
-      if (next < .005 && target === 0) this.hoverHeat.delete(id); else this.hoverHeat.set(id, next);
-    }
-    const width = this.width, height = this.height, scale = this.camera.scale, time = this.motionTime * .00034;
-    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    ctx.fillStyle = '#0e0e0d'; ctx.fillRect(0, 0, width, height);
-    this.projected = this.nodes.map((node, index) => {
-      // A coherent, bounded wave moves existing centers; the original layout and topology remain unchanged.
-      const dx = this.reducedMotion ? 0 : Math.sin(node.y * .0019 + time) * 7 + Math.sin(node.x * .0011 + time * .71) * 2.5;
-      const dy = this.reducedMotion ? 0 : Math.cos(node.x * .0017 + time * .88) * 6.5 + Math.sin(node.y * .0013 + time * .64) * 2.5;
-      const heat = this.hoverHeat.get(node.id) ?? 0, grow = 1 + heat * .025;
-      return { node, index, x: (node.x + dx - this.camera.x) * scale + width / 2,
-        y: (node.y + dy - this.camera.y) * scale + height / 2, w: COVER_WIDTH * scale * grow, h: COVER_HEIGHT * scale * grow, heat };
+  private disposeGraph():void{
+    this.atlasGeneration++;if(this.atlasTimer)clearTimeout(this.atlasTimer);this.atlasTimer=null;
+    this.details.clear();this.pendingDetails=[];
+    for(const texture of this.textureCache.values())texture.dispose();this.textureCache.clear();
+    this.graph.traverse(object=>{
+      const renderable=object as THREE.Mesh;
+      if(!(object instanceof THREE.Sprite))renderable.geometry?.dispose();
+      if(renderable.material){for(const mat of Array.isArray(renderable.material)?renderable.material:[renderable.material])mat.dispose();}
     });
-    this.visible = this.projected.filter(p => p.x + p.w / 2 >= -3 && p.y + p.h / 2 >= -3 && p.x - p.w / 2 <= width + 3 && p.y - p.h / 2 <= height + 3);
-    const highlighted = this.hoveredId ?? this.activeId, neighbors = highlighted ? this.adjacency.get(highlighted) : null;
-    for (const analytical of [false, true]) {
-      ctx.strokeStyle = scale > .3
-        ? analytical ? 'rgba(180,132,92,.065)' : 'rgba(180,132,92,.11)'
-        : analytical ? 'rgba(180,132,92,.16)' : 'rgba(180,132,92,.27)';
-      ctx.lineWidth = scale < .16 ? .45 : .7;
-      ctx.setLineDash(analytical ? [3.5, 4.5] : []);
-      ctx.beginPath();
-      for (const edge of this.resolvedEdges) {
-        if (edge.analytical !== analytical) continue;
-        const a = this.projected[edge.source], b = this.projected[edge.target];
-        if (this.edgeOffscreen(a, b)) continue;
-        this.edgePath(ctx, a, b);
-      }
-      ctx.stroke();
-    }
-    if (highlighted) {
-      for (const analytical of [false, true]) {
-        ctx.strokeStyle = analytical ? 'rgba(243,205,160,.66)' : 'rgba(243,205,160,.9)';
-        ctx.lineWidth = analytical ? 1 : 1.3; ctx.setLineDash(analytical ? [4, 4] : []); ctx.beginPath();
-        for (const edge of this.resolvedEdges) {
-          if (edge.analytical !== analytical) continue;
-          const a = this.projected[edge.source], b = this.projected[edge.target];
-          if (a.node.id !== highlighted && b.node.id !== highlighted || this.edgeOffscreen(a, b)) continue;
-          this.edgePath(ctx, a, b);
-        }
-        ctx.stroke();
-      }
-    }
-    ctx.setLineDash([]);
-    for (const p of this.visible) if (p.node.id !== this.hoveredId) this.drawCover(ctx, p, p.node.id === this.activeId, !!neighbors?.has(p.node.id));
-    const hover = this.hoveredId ? this.projected[this.nodeIndex.get(this.hoveredId) ?? -1] : null;
-    if (hover && this.visible.includes(hover)) this.drawCover(ctx, hover, true, false);
-    if (now - this.lastDomUpdate > 220 || !ambient && !cameraMoving && !hoverMoving) this.updateAccessibleCovers(now);
-    if (ambient || cameraMoving || hoverMoving) this.requestDraw();
+    this.scene.remove(this.graph);this.atlas?.dispose();this.atlas=null;this.sourceFrameTexture?.dispose();this.sourceFrameTexture=null;this.sourceFrame=null;
+    this.highlight=null;this.baseLines=null;this.activeParticles=null;this.highlightId=null;
   }
 
-  private edgeOffscreen(a: Position, b: Position): boolean {
-    return (a.x < -100 && b.x < -100) || (a.y < -120 && b.y < -120)
-      || (a.x > this.width + 100 && b.x > this.width + 100) || (a.y > this.height + 120 && b.y > this.height + 120);
-  }
-
-  private edgePath(ctx: CanvasRenderingContext2D, a: ProjectedNode, b: ProjectedNode): void {
-    const dx = b.x - a.x, dy = b.y - a.y;
-    if (!dx && !dy) return;
-    const from = Math.min(a.w / 2 / Math.max(.001, Math.abs(dx)), a.h / 2 / Math.max(.001, Math.abs(dy)));
-    const to = Math.min(b.w / 2 / Math.max(.001, Math.abs(dx)), b.h / 2 / Math.max(.001, Math.abs(dy)));
-    if (from + to >= 1) return;
-    ctx.moveTo(a.x + dx * from, a.y + dy * from); ctx.lineTo(b.x - dx * to, b.y - dy * to);
-  }
-
-  private drawCover(ctx: CanvasRenderingContext2D, p: ProjectedNode, selected: boolean, neighbor: boolean): void {
-    const theme = THEMES[this.hash(p.node.id) % THEMES.length], left = p.x - p.w / 2, top = p.y - p.h / 2;
-    if (p.w < 37) {
-      ctx.fillStyle = theme.paper; ctx.fillRect(left, top, Math.max(1, p.w), Math.max(1, p.h));
-      ctx.strokeStyle = selected ? '#efc69c' : neighbor ? '#d9b087' : theme.rule; ctx.lineWidth = selected ? 1.3 : .5;
-      ctx.strokeRect(left, top, Math.max(1, p.w), Math.max(1, p.h));
-      if (p.w > 5) {
-        ctx.fillStyle = theme.ink; ctx.globalAlpha = .65;
-        ctx.fillRect(left + p.w * .1, top + p.h * .22, p.w * .73, Math.max(.6, p.h * .035));
-        ctx.fillRect(left + p.w * .1, top + p.h * .29, p.w * .55, Math.max(.5, p.h * .025));
-        ctx.globalAlpha = 1;
-      }
-      return;
-    }
-    if (p.heat > .01) { ctx.shadowColor = '#d89b5d44'; ctx.shadowBlur = p.heat * 18; }
-    if (p.w < 86 || this.visible.length > 96) {
-      // The intermediate overview can contain hundreds of magazines. Render simple
-      // native typography there instead of allocating and evicting textures every frame.
-      ctx.save(); ctx.translate(left, top); ctx.scale(p.w / COVER_WIDTH, p.h / COVER_HEIGHT);
-      ctx.fillStyle = theme.paper; ctx.fillRect(0, 0, COVER_WIDTH, COVER_HEIGHT);
-      ctx.strokeStyle = theme.rule; ctx.lineWidth = .75; ctx.strokeRect(.5, .5, COVER_WIDTH - 1, COVER_HEIGHT - 1);
-      ctx.fillStyle = theme.accent; ctx.textBaseline = 'top'; ctx.font = `7px 'Courier New', monospace`;
-      ctx.fillText(this.typeLabel(p.node.type).toLocaleUpperCase('ru'), 12, 15);
-      const layout = this.getTitleLayout(ctx, p.node);
-      ctx.fillStyle = theme.ink; ctx.font = `${layout.size}px Georgia, 'Times New Roman', serif`;
-      for (let i = 0; i < layout.lines.length; i++) ctx.fillText(layout.lines[i], 12, 47 + i * layout.lineHeight);
-      const artTop = Math.max(120, 51 + layout.lines.length * layout.lineHeight);
-      if (p.w > 59 && artTop < 194 && this.visible.length < 200) this.drawActualTopology(ctx, p.node, { x: 12, y: artTop, w: 144, h: 194 - artTop }, theme);
-      ctx.fillStyle = theme.accent; ctx.font = `7px 'Courier New', monospace`;
-      ctx.fillText(`№ ${String(p.index + 1).padStart(4, '0')} / ${p.node.degree}`, 12, 210);
-      ctx.restore();
-    } else {
-      const texture = this.coverTexture(p.node, p.index);
-      ctx.drawImage(texture, left, top, p.w, p.h);
-    }
-    ctx.shadowBlur = 0;
-    if (selected || neighbor || p.heat > .01) {
-      ctx.strokeStyle = selected ? '#f3cca3' : neighbor ? '#ca9e72' : `rgba(235,194,148,${p.heat})`;
-      ctx.lineWidth = selected ? 1.5 : .9; ctx.strokeRect(left - 2, top - 2, p.w + 4, p.h + 4);
-      if (selected) { ctx.fillStyle = '#efc69c'; ctx.fillRect(left, top - 4, Math.min(28, p.w), 2); }
-    }
-  }
-
-  private coverTexture(node: NetworkNode, index: number): HTMLCanvasElement {
-    const cached = this.textures.get(node.id);
-    if (cached) { this.textures.delete(node.id); this.textures.set(node.id, cached); return cached; }
-    const canvas = document.createElement('canvas'); canvas.width = COVER_WIDTH * 2; canvas.height = COVER_HEIGHT * 2;
-    const ctx = canvas.getContext('2d')!; ctx.scale(2, 2);
-    const theme = THEMES[this.hash(node.id) % THEMES.length], pad = 12;
-    ctx.fillStyle = theme.paper; ctx.fillRect(0, 0, COVER_WIDTH, COVER_HEIGHT);
-    ctx.strokeStyle = theme.rule; ctx.lineWidth = .65; ctx.strokeRect(.5, .5, COVER_WIDTH - 1, COVER_HEIGHT - 1);
-    ctx.fillStyle = theme.ink; ctx.textBaseline = 'top';
-    ctx.font = `5.7px 'IBM Plex Mono', 'Courier New', monospace`;
-    ctx.fillText('АТЛАС / СВЯЗАННОЕ ИЗДАНИЕ', pad, 10);
-    ctx.textAlign = 'right'; ctx.fillText(String(index + 1).padStart(4, '0'), COVER_WIDTH - pad, 10); ctx.textAlign = 'left';
-    ctx.strokeStyle = theme.rule; ctx.beginPath(); ctx.moveTo(pad, 22); ctx.lineTo(COVER_WIDTH - pad, 22); ctx.stroke();
-    ctx.fillStyle = theme.accent; ctx.font = `6.5px 'IBM Plex Mono', 'Courier New', monospace`;
-    ctx.fillText(this.typeLabel(node.type).toLocaleUpperCase('ru'), pad, 31);
-    const layout = this.getTitleLayout(ctx, node);
-    ctx.fillStyle = theme.ink; ctx.font = `${layout.size}px Georgia, 'Times New Roman', serif`;
-    for (let i = 0; i < layout.lines.length; i++) ctx.fillText(layout.lines[i], pad, 47 + i * layout.lineHeight);
-    const artTop = Math.max(118, 51 + layout.lines.length * layout.lineHeight);
-    if (artTop < 194) this.drawActualTopology(ctx, node, { x: pad, y: artTop, w: COVER_WIDTH - pad * 2, h: 194 - artTop }, theme);
-    ctx.strokeStyle = theme.rule; ctx.beginPath(); ctx.moveTo(pad, 202); ctx.lineTo(COVER_WIDTH - pad, 202); ctx.stroke();
-    ctx.fillStyle = theme.ink; ctx.font = `6.5px 'IBM Plex Mono', 'Courier New', monospace`;
-    ctx.fillText(this.connectionCount(node.degree).toLocaleUpperCase('ru'), pad, 210); ctx.textAlign = 'right'; ctx.fillText('ЧИТАТЬ ↗', COVER_WIDTH - pad, 210);
-    this.textures.set(node.id, canvas);
-    // Full-resolution textures are limited to the immediate reading neighborhood.
-    if (this.textures.size > 96) this.textures.delete(this.textures.keys().next().value!);
-    return canvas;
-  }
-
-  private titleLayout(ctx: CanvasRenderingContext2D, title: string, width: number): { lines: string[]; size: number; lineHeight: number } {
-    const text = title.replace(/\s+/g, ' ').trim();
-    for (const size of [21, 19, 17, 15, 13, 11, 9, 7]) {
-      ctx.font = `${size}px Georgia, 'Times New Roman', serif`;
-      // Prefer a smaller coherent word over a larger title with arbitrary glyph breaks.
-      // The smallest size remains a last-resort fallback for unusually long tokens.
-      if (size > 7 && text.split(' ').some(word => ctx.measureText(word).width > width)) continue;
-      const lines: string[] = []; let line = '';
-      for (let word of text.split(' ')) {
-        // Long single tokens are split by measured glyphs instead of overflowing the frame.
-        while (ctx.measureText(word).width > width) {
-          let cut = 1;
-          while (cut < word.length && ctx.measureText(word.slice(0, cut + 1)).width <= width) cut++;
-          if (line) { lines.push(line); line = ''; }
-          lines.push(word.slice(0, cut)); word = word.slice(cut);
-        }
-        if (ctx.measureText(line ? `${line} ${word}` : word).width <= width) line = line ? `${line} ${word}` : word;
-        else { lines.push(line); line = word; }
-      }
-      if (line) lines.push(line);
-      const lineHeight = size * 1.06;
-      if (lines.length * lineHeight <= 143 || size === 7) return { lines, size, lineHeight };
-    }
-    return { lines: [text], size: 7, lineHeight: 8 };
-  }
-
-  private getTitleLayout(ctx: CanvasRenderingContext2D, node: NetworkNode): { lines: string[]; size: number; lineHeight: number } {
-    let layout = this.titleLayouts.get(node.id);
-    if (!layout) { layout = this.titleLayout(ctx, node.label, COVER_WIDTH - 24); this.titleLayouts.set(node.id, layout); }
-    return layout;
-  }
-
-  private drawActualTopology(ctx: CanvasRenderingContext2D, node: NetworkNode, box: { x: number; y: number; w: number; h: number }, theme: CoverTheme): void {
-    const neighbors = [...this.adjacency.get(node.id) ?? []].map(id => this.nodeById.get(id)!).filter(Boolean)
-      .sort((a, b) => b.degree - a.degree).slice(0, 18);
-    if (!neighbors.length) return;
-    const maxX = Math.max(1, ...neighbors.map(n => Math.abs(n.x - node.x))), maxY = Math.max(1, ...neighbors.map(n => Math.abs(n.y - node.y)));
-    const cx = box.x + box.w / 2, cy = box.y + box.h / 2;
-    ctx.save(); ctx.beginPath(); ctx.rect(box.x, box.y, box.w, box.h); ctx.clip();
-    ctx.strokeStyle = theme.accent; ctx.lineWidth = .65; ctx.globalAlpha = .8; ctx.beginPath();
-    for (const neighbor of neighbors) {
-      const x = cx + (neighbor.x - node.x) / maxX * (box.w / 2 - 9), y = cy + (neighbor.y - node.y) / maxY * (box.h / 2 - 4);
-      ctx.moveTo(cx, cy); ctx.lineTo(x, y);
-    }
-    ctx.stroke(); ctx.fillStyle = theme.accent;
-    for (const neighbor of neighbors) {
-      const x = cx + (neighbor.x - node.x) / maxX * (box.w / 2 - 9), y = cy + (neighbor.y - node.y) / maxY * (box.h / 2 - 4);
-      ctx.beginPath(); ctx.arc(x, y, 1.2, 0, Math.PI * 2); ctx.fill();
-    }
-    ctx.strokeStyle = theme.ink; ctx.lineWidth = .8; ctx.beginPath(); ctx.arc(cx, cy, 3.5, 0, Math.PI * 2); ctx.stroke();
-    ctx.restore();
-  }
-
-  private updateAccessibleCovers(now: number): void {
-    this.lastDomUpdate = now;
-    const eligible = this.visible.filter(p => p.w > 40 && p.x > 0 && p.x < this.width && p.y > 0 && p.y < this.height)
-      .sort((a, b) => a.y - b.y || a.x - b.x).slice(0, 48);
-    const next = eligible.map(p => ({ id: p.node.id, label: `${this.typeLabel(p.node.type)}. ${p.node.label}. ${this.connectionCount(p.node.degree)}. Открыть материал.`, x: p.x - p.w / 2, y: p.y - p.h / 2, w: p.w, h: p.h }));
-    this.zone.run(() => {
-      this.accessibleCovers = next; this.visibleCoverCount = this.visible.length;
-      this.cameraScale = Math.round(this.camera.scale * 10000) / 10000;
-      this.cdr.markForCheck();
+  private buildCurves():void{
+    const directions=this.nodes.map(node=>{
+      const source=this.positions[this.indices.get(node.id)!],sum=new THREE.Vector3();let count=0;
+      for(const id of this.adjacency.get(node.id)??[]){sum.add(this.positions[this.indices.get(id)!]);count++;}
+      return count?sum.multiplyScalar(1/count).sub(source).normalize():new THREE.Vector3(0,1,0);
     });
+    this.curves=[];
+    for(const edge of this.edges){
+      const source=this.indices.get(edge.source),target=this.indices.get(edge.target);if(source===undefined||target===undefined)continue;
+      const a=this.positions[source].clone(),d=this.positions[target].clone(),direction=d.clone().sub(a),length=direction.length();
+      if(length<.001)continue;direction.normalize();
+      const curl=new THREE.Vector3(Math.sin(source*.71+target),Math.cos(target*.43+source),Math.sin(target*.19-source)).cross(direction).normalize().multiplyScalar(Math.min(length*.13,180));
+      const b=a.clone().add(direction.clone().multiplyScalar(length*.22)).add(directions[source].clone().multiplyScalar(length*.14)).add(curl);
+      const c=d.clone().addScaledVector(direction,-length*.22).add(directions[target].clone().multiplyScalar(length*.14)).add(curl);
+      this.curves.push({source,target,a,b,c,d,length,analytical:edge.analytical});
+    }
   }
 
-  private hash(value: string): number {
-    let result = 2166136261;
-    for (let i = 0; i < value.length; i++) { result ^= value.charCodeAt(i); result = Math.imul(result, 16777619); }
-    return result >>> 0;
+  private buildAtlas():void{
+    const canvas=document.createElement('canvas');canvas.width=ATLAS_SIZE;canvas.height=ATLAS_SIZE;
+    const ctx=canvas.getContext('2d')!;ctx.fillStyle='#171a1b';ctx.fillRect(0,0,ATLAS_SIZE,ATLAS_SIZE);
+    const columns=Math.floor(ATLAS_SIZE/TILE_W);
+    for(let i=0;i<this.nodes.length;i++){
+      const x=i%columns*TILE_W,y=Math.floor(i/columns)*TILE_H;ctx.fillStyle=i%5===0?'#b3a995':'#232629';ctx.fillRect(x+1,y+1,TILE_W-2,TILE_H-2);
+    }
+    this.atlas=new THREE.CanvasTexture(canvas);this.atlas.colorSpace=THREE.SRGBColorSpace;this.atlas.anisotropy=Math.min(4,this.renderer?.capabilities.getMaxAnisotropy()??1);
+    this.atlasReady=false;const generation=++this.atlasGeneration;let cursor=0;
+    const chunk=()=>{
+      if(this.destroyed||generation!==this.atlasGeneration)return;
+      const end=Math.min(cursor+80,this.nodes.length);
+      for(;cursor<end;cursor++){
+        const x=cursor%columns*TILE_W+1,y=Math.floor(cursor/columns)*TILE_H+1;
+        ctx.save();ctx.beginPath();ctx.rect(x,y,TILE_W-2,TILE_H-2);ctx.clip();ctx.translate(x,y);
+        const node=this.nodes[cursor],neighbors=[...this.adjacency.get(node.id)??[]].map(id=>this.nodeMap.get(id)!);
+        paintCover(ctx,node,{width:TILE_W-2,height:TILE_H-2,serial:cursor+1,neighbors,origin:node,detail:'thumbnail'});ctx.restore();
+      }
+      if(cursor%400===0||cursor===this.nodes.length){if(this.atlas)this.atlas.needsUpdate=true;this.requestDraw();}
+      if(cursor<this.nodes.length)this.atlasTimer=setTimeout(chunk,0);
+      else{this.atlasReady=true;this.zone.run(()=>this.cdr.markForCheck());}
+    };
+    this.atlasTimer=setTimeout(chunk,0);
+  }
+
+  private commonUniforms(){return{uTime:this.timeUniform,uMotion:this.motionUniform,uFog:{value:this.radius*4+2200}};}
+
+  private buildNodeMesh():void{
+    const base=new THREE.PlaneGeometry(COVER_W,COVER_H);const geometry=new THREE.InstancedBufferGeometry();
+    geometry.index=base.index;geometry.setAttribute('position',base.getAttribute('position'));geometry.setAttribute('uv',base.getAttribute('uv'));
+    geometry.instanceCount=this.nodes.length;
+    const centers=new Float32Array(this.nodes.length*3),tiles=new Float32Array(this.nodes.length*2),degrees=new Float32Array(this.nodes.length),columns=Math.floor(ATLAS_SIZE/TILE_W);
+    for(let i=0;i<this.nodes.length;i++){
+      this.positions[i].toArray(centers,i*3);degrees[i]=this.nodes[i].degree;
+      tiles[i*2]=(i%columns*TILE_W+1)/ATLAS_SIZE;tiles[i*2+1]=1-(Math.floor(i/columns)*TILE_H+TILE_H-1)/ATLAS_SIZE;
+    }
+    geometry.setAttribute('aCenter',new THREE.InstancedBufferAttribute(centers,3));geometry.setAttribute('aTile',new THREE.InstancedBufferAttribute(tiles,2));
+    this.nodeHeat=new THREE.InstancedBufferAttribute(new Float32Array(this.nodes.length),1);geometry.setAttribute('aHeat',this.nodeHeat);
+    this.cardVisibility=new THREE.InstancedBufferAttribute(new Float32Array(this.nodes.length),1);geometry.setAttribute('aVisible',this.cardVisibility);
+    const material=new THREE.ShaderMaterial({vertexShader:CARD_VERTEX,fragmentShader:CARD_FRAGMENT,uniforms:{...this.commonUniforms(),uAtlas:{value:this.atlas},uHeight:{value:this.height}},side:THREE.DoubleSide});
+    const mesh=new THREE.Mesh(geometry,material);mesh.frustumCulled=false;mesh.renderOrder=1;this.graph.add(mesh);
+    const pointsGeometry=new THREE.BufferGeometry();pointsGeometry.setAttribute('position',new THREE.BufferAttribute(centers,3));
+    pointsGeometry.setAttribute('aDegree',new THREE.BufferAttribute(degrees,1));this.pointHeat=new THREE.BufferAttribute(new Float32Array(this.nodes.length),1);pointsGeometry.setAttribute('aHeat',this.pointHeat);
+    const pointsMaterial=new THREE.ShaderMaterial({vertexShader:POINT_VERTEX,fragmentShader:POINT_FRAGMENT,uniforms:{...this.commonUniforms(),uDpr:{value:this.dpr}},transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
+    const points=new THREE.Points(pointsGeometry,pointsMaterial);points.frustumCulled=false;this.graph.add(points);
+  }
+
+  private curvePoint(curve:ActualCurve,t:number,out:THREE.Vector3):THREE.Vector3{
+    const s=1-t;return out.set(0,0,0).addScaledVector(curve.a,s*s*s).addScaledVector(curve.b,3*s*s*t).addScaledVector(curve.c,3*s*t*t).addScaledVector(curve.d,t*t*t);
+  }
+
+  private createLines(curves:ActualCurve[],active:boolean):THREE.LineSegments{
+    const count=curves.length*CURVE_STEPS*2,positions=new Float32Array(count*3),kinds=new Float32Array(count),distances=new Float32Array(count);
+    let vertex=0;const a=new THREE.Vector3(),b=new THREE.Vector3();
+    for(const curve of curves){
+      let distance=0;this.curvePoint(curve,0,a);
+      for(let step=0;step<CURVE_STEPS;step++){
+        this.curvePoint(curve,(step+1)/CURVE_STEPS,b);const nextDistance=distance+a.distanceTo(b);
+        a.toArray(positions,vertex*3);kinds[vertex]=Number(curve.analytical);distances[vertex++]=distance;
+        b.toArray(positions,vertex*3);kinds[vertex]=Number(curve.analytical);distances[vertex++]=nextDistance;
+        a.copy(b);distance=nextDistance;
+      }
+    }
+    const geometry=new THREE.BufferGeometry();geometry.setAttribute('position',new THREE.BufferAttribute(positions,3));geometry.setAttribute('aKind',new THREE.BufferAttribute(kinds,1));geometry.setAttribute('aDistance',new THREE.BufferAttribute(distances,1));
+    const material=new THREE.ShaderMaterial({vertexShader:LINE_VERTEX,fragmentShader:LINE_FRAGMENT,
+      uniforms:{...this.commonUniforms(),uColor:{value:new THREE.Color(active?'#efd38b':'#6b808f')},uOpacity:{value:active?.85:.032}},
+      transparent:true,depthWrite:false,blending:active?THREE.AdditiveBlending:THREE.NormalBlending});
+    const lines=new THREE.LineSegments(geometry,material);lines.frustumCulled=false;return lines;
+  }
+
+  private createParticles(curves:ActualCurve[],active:boolean):THREE.Points{
+    const repeats=active?2:1,count=curves.length*repeats,arrays=Array.from({length:4},()=>new Float32Array(count*3));
+    const phase=new Float32Array(count),speed=new Float32Array(count);let i=0;
+    for(const curve of curves)for(let copy=0;copy<repeats;copy++){
+      curve.a.toArray(arrays[0],i*3);curve.b.toArray(arrays[1],i*3);curve.c.toArray(arrays[2],i*3);curve.d.toArray(arrays[3],i*3);
+      phase[i]=(curve.source*.618033+curve.target*.41421+copy*.5)%1;speed[i]=Math.min(2,Math.max(.3,900/curve.length));i++;
+    }
+    const geometry=new THREE.BufferGeometry();geometry.setAttribute('position',new THREE.BufferAttribute(new Float32Array(count*3),3));
+    for(let k=0;k<4;k++)geometry.setAttribute(['aStart','aC1','aC2','aEnd'][k],new THREE.BufferAttribute(arrays[k],3));
+    geometry.setAttribute('aPhase',new THREE.BufferAttribute(phase,1));geometry.setAttribute('aSpeed',new THREE.BufferAttribute(speed,1));
+    const material=new THREE.ShaderMaterial({vertexShader:PARTICLE_VERTEX,fragmentShader:PARTICLE_FRAGMENT,
+      uniforms:{...this.commonUniforms(),uDpr:{value:this.dpr},uSize:{value:active?4.3:2.2},uOpacity:{value:active?.95:.38}},transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
+    const particles=new THREE.Points(geometry,material);particles.frustumCulled=false;return particles;
+  }
+
+  private updateHighlight(forceId?:string):void{
+    const id=forceId??this.hoveredId??this.activeId;if(this.highlightId===id&&this.highlight)return;
+    this.highlightId=id;
+    this.updateBaseOpacity();
+    for(const object of [this.highlight,this.activeParticles])if(object){this.graph.remove(object);object.geometry.dispose();(object.material as THREE.Material).dispose();}
+    this.highlight=null;this.activeParticles=null;
+    if(this.nodeHeat&&this.pointHeat){
+      (this.nodeHeat.array as Float32Array).fill(0);(this.pointHeat.array as Float32Array).fill(0);
+      if(id){
+        for(const neighbor of this.adjacency.get(id)??[]){const i=this.indices.get(neighbor)!;this.nodeHeat.setX(i,1);this.pointHeat.setX(i,1);}
+        const index=this.indices.get(id);if(index!==undefined){this.nodeHeat.setX(index,2);this.pointHeat.setX(index,2);}
+      }
+      this.nodeHeat.needsUpdate=true;this.pointHeat.needsUpdate=true;
+    }
+    const index=id?this.indices.get(id):undefined;
+    if(index!==undefined){const curves=this.curves.filter(c=>c.source===index||c.target===index);
+      this.highlight=this.createLines(curves,true);this.activeParticles=this.createParticles(curves,true);this.graph.add(this.highlight,this.activeParticles);}
+    this.lastProjection=0;this.requestDraw();
+  }
+
+  private resize():void{
+    const rect=this.surface.nativeElement.getBoundingClientRect();if(rect.width<1||rect.height<1||!this.renderer)return;
+    this.width=rect.width;this.height=rect.height;this.dpr=Math.min(window.devicePixelRatio||1,2);
+    this.renderer.setPixelRatio(this.dpr);this.renderer.setSize(this.width,this.height,false);
+    this.camera.aspect=this.width/this.height;this.camera.updateProjectionMatrix();
+    this.graph.traverse(object=>{const material=(object as THREE.Mesh).material as THREE.ShaderMaterial|undefined;
+      if(material?.uniforms?.['uHeight'])material.uniforms['uHeight'].value=this.height;
+      if(material?.uniforms?.['uDpr'])material.uniforms['uDpr'].value=this.dpr;});
+    if(!this.started&&this.nodes.length)this.startView();this.lastProjection=0;this.requestDraw();
+  }
+
+  private readingAnchor():number|undefined{
+    const candidates=this.nodes.map((n,i)=>({n,i})).filter(({n})=>n.type==='theme'||n.type==='construct');
+    candidates.sort((a,b)=>this.positions[a.i].distanceToSquared(this.center)-this.positions[b.i].distanceToSquared(this.center));
+    return candidates[0]?.i??(this.nodes.length?0:undefined);
+  }
+  private readingDistance():number{return Math.max(900,this.height/(2*Math.tan(THREE.MathUtils.degToRad(this.camera.fov/2)))*COVER_H/172);}
+  private startView():void{
+    if(!this.controls)return;this.started=true;
+    const index=this.focusId?this.indices.get(this.focusId):this.readingAnchor();
+    const target=index===undefined?this.center:this.positions[index];
+    this.controls.target.copy(target);this.camera.position.copy(target).add(new THREE.Vector3(.52,.3,1).normalize().multiplyScalar(this.readingDistance()));
+    this.controls.update();this.lastProjection=0;
+  }
+  private flyTo(target:THREE.Vector3,distance:number):void{
+    if(!this.controls)return;
+    const direction=this.camera.position.clone().sub(this.controls.target).normalize();if(direction.lengthSq()<.1)direction.set(.5,.3,1).normalize();
+    const toEye=target.clone().addScaledVector(direction,distance);
+    if(this.reduced){this.controls.target.copy(target);this.camera.position.copy(toEye);this.controls.update();this.flight=null;}
+    else this.flight={fromEye:this.camera.position.clone(),toEye,fromTarget:this.controls.target.clone(),toTarget:target.clone(),started:performance.now(),duration:780};
+    this.requestDraw();
+  }
+  private fit():void{
+    const aspect=Math.max(.35,Math.min(1,this.camera.aspect));this.flyTo(this.center,this.fitDistance/aspect);
+    this.setHovered(null);this.status='Вся сеть. 4698 реальных узлов в едином трёхмерном пространстве.';
+  }
+  private zoom(factor:number):void{
+    if(!this.controls)return;const distance=THREE.MathUtils.clamp(this.camera.position.distanceTo(this.controls.target)*factor,220,this.fitDistance*3);
+    this.flyTo(this.controls.target,distance);
+  }
+
+  private flowing(position:THREE.Vector3,out:THREE.Vector3):THREE.Vector3{
+    const t=this.elapsed,m=this.motionUniform.value;return out.set(
+      position.x+(Math.sin(position.y*.0019+t*.34)*7+Math.sin(position.x*.0011+t*.2414)*2.5)*m,
+      position.y+(Math.cos(position.x*.0017+t*.2992)*6.5+Math.sin(position.y*.0013+t*.2176)*2.5)*m,
+      position.z+Math.sin(position.x*.0013+position.y*.0011+t*.265)*8*m);
+  }
+
+  private updateProjection(now:number):void{
+    if(!this.controls||!this.width||!this.height)return;
+    this.camera.updateMatrixWorld();this.inverseView.copy(this.camera.matrixWorldInverse);
+    const focal=this.height/(2*Math.tan(THREE.MathUtils.degToRad(this.camera.fov/2)));
+    this.projected=[];
+    for(let i=0;i<this.nodes.length;i++){
+      this.flowing(this.positions[i],this.temp);this.viewTemp.copy(this.temp).applyMatrix4(this.inverseView);const depth=-this.viewTemp.z;if(depth<5)continue;
+      this.ndc.copy(this.temp).project(this.camera);if(this.ndc.z>1||this.ndc.z< -1)continue;
+      const x=(this.ndc.x*.5+.5)*this.width,y=(-this.ndc.y*.5+.5)*this.height,h=Math.min(276,COVER_H*focal/depth),w=h*COVER_W/COVER_H;
+      if(x+w/2<0||y+h/2<0||x-w/2>this.width||y-h/2>this.height)continue;
+      this.projected.push({index:i,id:this.nodes[i].id,x,y,w,h,depth});
+    }
+    this.projected.sort((a,b)=>a.depth-b.depth);
+    const priority=this.hoveredId??this.activeId,chosen:ProjectedNode[]=[];
+    const candidates=this.projected.filter(p=>p.h>=74&&p.x>24&&p.x<this.width-24&&p.y>22&&p.y<this.height-25)
+      .sort((a,b)=>Number(b.id===priority)-Number(a.id===priority)
+        ||(Math.abs(a.h-174)-(this.details.has(a.id)?16:0))-(Math.abs(b.h-174)-(this.details.has(b.id)?16:0)));
+    for(const p of candidates){
+      if(chosen.length>=DETAIL_BUDGET)break;
+      if(p.id!==priority&&chosen.some(q=>Math.abs(p.x-q.x)<(p.w+q.w)/2+12&&Math.abs(p.y-q.y)<(p.h+q.h)/2+12))continue;
+      chosen.push(p);
+    }
+    this.foreground=chosen;
+    if(this.cardVisibility){(this.cardVisibility.array as Float32Array).fill(0);for(const p of chosen)this.cardVisibility.setX(p.index,1);this.cardVisibility.needsUpdate=true;}
+    this.syncDetails(chosen);this.lastProjection=now;
+    if(now-this.lastDom>200){
+      const covers=chosen.slice().sort((a,b)=>a.y-b.y||a.x-b.x).map(p=>({id:p.id,label:`${this.typeLabel(this.nodes[p.index].type)}. ${this.nodes[p.index].label}. Связей: ${this.nodes[p.index].degree}. Открыть материал.`,x:p.x-p.w/2,y:p.y-p.h/2,w:p.w,h:p.h}));
+      this.lastDom=now;const distance=this.camera.position.distanceTo(this.controls.target),zoom=this.fitDistance/distance;
+      this.zone.run(()=>{this.accessibleCovers=covers;this.visibleCoverCount=this.projected.length;this.detailCoverCount=chosen.length;this.cameraDistance=Math.round(distance);this.cameraScale=Math.round(focal/distance*10000)/10000;
+        if(Math.abs(zoom-this.lastZoom)>.01){this.lastZoom=zoom;this.viewportChange.emit({zoom:Math.round(zoom*100)/100});}this.cdr.markForCheck();});
+    }
+  }
+
+  private syncDetails(chosen:ProjectedNode[]):void{
+    const wanted=new Set(chosen.map(p=>p.id));
+    for(const [id,detail]of this.details)if(!wanted.has(id)){this.graph.remove(detail.sprite);detail.material.dispose();this.details.delete(id);}
+    this.pendingDetails=[];
+    for(const p of chosen)if(!this.details.has(p.id)){
+      const cached=this.textureCache.get(p.id);
+      if(cached){this.textureCache.delete(p.id);this.textureCache.set(p.id,cached);this.attachDetail(p,cached);}
+      else this.pendingDetails.push(p);
+    }
+  }
+
+  private attachDetail(p:ProjectedNode,texture:THREE.CanvasTexture):void{
+    // This is the decluttered foreground: paper must never fail a coplanar depth
+    // test against its low-resolution atlas placeholder (CPU/GPU wave rounding).
+    const node=this.nodes[p.index],material=new THREE.SpriteMaterial({map:texture,transparent:true,opacity:0,depthWrite:false,depthTest:false,toneMapped:false});
+    const sprite=new THREE.Sprite(material);sprite.renderOrder=3;sprite.frustumCulled=false;
+    this.details.set(p.id,{sprite,texture,material,node});this.graph.add(sprite);
+  }
+
+  private buildSourceFrame():void{
+    const width=COVER_W+12,height=COVER_H+12,canvas=document.createElement('canvas');canvas.width=width*2;canvas.height=height*2;
+    const ctx=canvas.getContext('2d')!;ctx.scale(2,2);ctx.strokeStyle='#eed797';ctx.lineWidth=1.1;ctx.strokeRect(2,2,width-4,height-4);
+    ctx.strokeStyle='#ffe5a0';ctx.lineWidth=2.6;
+    for(const [x,y,sx,sy]of [[2,2,1,1],[width-2,2,-1,1],[2,height-2,1,-1],[width-2,height-2,-1,-1]]){
+      ctx.beginPath();ctx.moveTo(x,y+sy*10);ctx.lineTo(x,y);ctx.lineTo(x+sx*10,y);ctx.stroke();
+    }
+    this.sourceFrameTexture=new THREE.CanvasTexture(canvas);this.sourceFrameTexture.colorSpace=THREE.SRGBColorSpace;
+    const material=new THREE.SpriteMaterial({map:this.sourceFrameTexture,transparent:true,opacity:0,depthWrite:false,depthTest:false,toneMapped:false});
+    this.sourceFrame=new THREE.Sprite(material);this.sourceFrame.renderOrder=5;this.sourceFrame.frustumCulled=false;this.graph.add(this.sourceFrame);
+  }
+
+  private buildOneDetail():void{
+    const p=this.pendingDetails.shift();if(!p||this.details.has(p.id)||!this.foreground.some(q=>q.id===p.id))return;
+    const node=this.nodes[p.index],canvas=document.createElement('canvas');canvas.width=COVER_W*2;canvas.height=COVER_H*2;
+    const ctx=canvas.getContext('2d')!;ctx.scale(2,2);
+    const neighbors=[...this.adjacency.get(node.id)??[]].map(id=>this.nodeMap.get(id)!);
+    paintCover(ctx,node,{width:COVER_W,height:COVER_H,serial:p.index+1,neighbors,origin:node,detail:'full'});
+    const texture=new THREE.CanvasTexture(canvas);texture.colorSpace=THREE.SRGBColorSpace;texture.anisotropy=Math.min(4,this.renderer?.capabilities.getMaxAnisotropy()??1);
+    this.textureCache.set(p.id,texture);this.attachDetail(p,texture);
+    // 24 live covers + eight recent neighbors: a hard, bounded GPU texture budget.
+    for(const [id,oldTexture]of this.textureCache){if(this.textureCache.size<=DETAIL_BUDGET+8)break;if(!this.details.has(id)){oldTexture.dispose();this.textureCache.delete(id);}}
+  }
+
+  private hitTest(x:number,y:number):string|null{
+    if(performance.now()-this.lastProjection>40)this.updateProjection(performance.now());
+    // Foreground covers have explicit rectangles; remaining actual nodes remain point targets.
+    const coverHits=this.foreground.filter(p=>Math.abs(x-p.x)<=p.w/2&&Math.abs(y-p.y)<=p.h/2).sort((a,b)=>a.depth-b.depth);
+    if(coverHits.length)return coverHits[0].id;
+    let closest:string|null=null,best=64;
+    for(const p of this.projected){const distance=(x-p.x)**2+(y-p.y)**2;if(distance<best){best=distance;closest=p.id;}}
+    return closest;
+  }
+  private pointerPosition(event:PointerEvent):{x:number;y:number}{const r=this.surface.nativeElement.getBoundingClientRect();return{x:event.clientX-r.left,y:event.clientY-r.top};}
+  private onPointerDown(event:PointerEvent):void{
+    this.pointerIds.add(event.pointerId);if(this.pointerIds.size>1){this.multiPointer=true;this.pointerMoved=true;}
+    if(event.button!==0)return;const p=this.pointerPosition(event);this.pointerStart={...p,id:event.pointerId};this.pointerMoved=false;
+    if(this.multiPointer)this.pointerMoved=true;
+    (this.surface.nativeElement.parentElement as HTMLElement)?.focus({preventScroll:true});
+  }
+  private onPointerMove(event:PointerEvent):void{
+    const p=this.pointerPosition(event);
+    if(this.pointerStart&&Math.hypot(p.x-this.pointerStart.x,p.y-this.pointerStart.y)>5){this.pointerMoved=true;this.setHovered(null);}
+    if(!event.buttons&&!this.keyboardId)this.setHovered(this.hitTest(p.x,p.y));
+  }
+  private onPointerUp(event:PointerEvent):void{
+    if(this.pointerStart?.id===event.pointerId&&!this.pointerMoved&&!this.multiPointer){const p=this.pointerPosition(event),id=this.hitTest(p.x,p.y);if(id)this.selectNode(id);}
+    this.pointerIds.delete(event.pointerId);if(!this.pointerIds.size)this.multiPointer=false;
+    this.pointerStart=null;
+  }
+  private setHovered(id:string|null):void{
+    if(this.hoveredId===id)return;this.hoveredId=id;this.surface.nativeElement.style.cursor=id?'pointer':'grab';this.updateHighlight();
+  }
+
+  private requestDraw():void{
+    if(!this.initialized||this.destroyed||this.frame||document.hidden||this.rendererState==='lost')return;
+    this.zone.runOutsideAngular(()=>{this.frame=requestAnimationFrame(now=>{this.frame=0;this.draw(now);});});
+  }
+
+  private updateBaseOpacity():void{
+    if(!this.baseLines||!this.controls)return;
+    const distance=this.camera.position.distanceTo(this.controls.target);
+    const overview=THREE.MathUtils.smoothstep(distance,this.radius*1.25,this.radius*2.5);
+    (this.baseLines.material as THREE.ShaderMaterial).uniforms['uOpacity'].value=(.032+overview*.048)/(this.highlightId?3:1);
+  }
+
+  private draw(now:number):void{
+    if(!this.renderer||!this.controls||!this.width||!this.height||document.hidden)return;
+    const dt=this.lastFrame?Math.min(60,now-this.lastFrame)/1000:1/60;this.lastFrame=now;
+    const ambient=!this.motionPaused&&!this.reduced;
+    if(ambient)this.elapsed+=dt;this.timeUniform.value=this.elapsed;
+    if(this.flight){
+      const f=this.flight,t=Math.min(1,(now-f.started)/f.duration),ease=t*t*(3-2*t);
+      this.camera.position.lerpVectors(f.fromEye,f.toEye,ease);this.controls.target.lerpVectors(f.fromTarget,f.toTarget,ease);
+      if(t>=1)this.flight=null;
+    }
+    this.controls.autoRotate=ambient&&!this.flight&&this.camera.position.distanceTo(this.controls.target)>this.radius*1.2;
+    this.controls.update(dt);
+    this.updateBaseOpacity();
+    if(now-this.lastProjection>90||this.flight||this.controlsMoving)this.updateProjection(now);
+    this.buildOneDetail();
+    const focal=this.height/(2*Math.tan(THREE.MathUtils.degToRad(this.camera.fov/2)));
+    for(const [id,detail]of this.details){
+      const index=this.indices.get(id)!;this.flowing(this.positions[index],detail.sprite.position);
+      this.viewTemp.copy(detail.sprite.position).applyMatrix4(this.camera.matrixWorldInverse);const depth=-this.viewTemp.z;
+      const cap=Math.min(1,276/(COVER_H*focal/Math.max(1,depth))),grow=id===this.hoveredId?1.022:1;
+      detail.sprite.scale.set(COVER_W*cap*grow,COVER_H*cap*grow,1);
+      detail.material.opacity=Math.min(1,detail.material.opacity+dt*7);
+      detail.material.color.set(id===this.hoveredId||id===this.activeId?0xffffff:0xdddfe0);
+    }
+    let frameMoving=false;
+    if(this.sourceFrame){
+      const id=this.hoveredId??this.activeId,detail=id?this.details.get(id):null;
+      const target=detail?1:0,material=this.sourceFrame.material as THREE.SpriteMaterial;
+      material.opacity+= (target-material.opacity)*(this.reduced?1:1-Math.exp(-dt/ .11));
+      frameMoving=Math.abs(target-material.opacity)>.005;
+      if(detail){this.sourceFrame.position.copy(detail.sprite.position);this.sourceFrame.scale.set(detail.sprite.scale.x*(COVER_W+12)/COVER_W,detail.sprite.scale.y*(COVER_H+12)/COVER_H,1);}
+      this.sourceFrame.visible=material.opacity>.005;
+    }
+    this.renderer.render(this.scene,this.camera);
+    const damping=now-this.lastControlChange<900;
+    if(ambient||this.flight||this.controlsMoving||damping||frameMoving||this.pendingDetails.length||[...this.details.values()].some(d=>d.material.opacity<1))this.requestDraw();
   }
 }

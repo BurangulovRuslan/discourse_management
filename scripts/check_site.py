@@ -1,4 +1,4 @@
-"""Verify relative links, anchors, private paths, graph consistency and packing."""
+"""Verify links, private paths, graph coverage, 3D coordinates and evidence."""
 from html.parser import HTMLParser
 from collections import Counter, defaultdict
 import json
@@ -43,23 +43,6 @@ class Page(HTMLParser):
         if self.quotation is not None and tag == 'blockquote':
             self.quotations.append(normalized_display_text(''.join(self.quotation)))
             self.quotation = None
-
-
-def packed_overlap(nodes, width=248, height=304):
-    """An occupied cell can contain only one nonoverlapping padded center."""
-    buckets = defaultdict(list)
-    for node in nodes:
-        x, y = node.get('x'), node.get('y')
-        if not isinstance(x,(int,float)) or not isinstance(y,(int,float)) or not math.isfinite(x+y):
-            continue
-        cx, cy = math.floor(x/width), math.floor(y/height)
-        for dx in (-1,0,1):
-            for dy in (-1,0,1):
-                for other in buckets[(cx+dx,cy+dy)]:
-                    if abs(x-other['x'])<width and abs(y-other['y'])<height:
-                        return (other['id'],node['id'])
-        buckets[(cx,cy)].append(node)
-    return None
 
 
 def complete_paragraphs(raw, paragraphs):
@@ -162,22 +145,18 @@ def check(project):
             errors.append('Explorer changed an analytical node label or type')
         if not set(node['books']).issubset(book_ids) or any(not isinstance(index,int) or index<0 or index>=len(explorer['references']) for index in node['refIds']):
             errors.append('Explorer has invalid book or quotation identifiers')
-        if not all(isinstance(node.get(axis),(int,float)) and math.isfinite(node[axis]) for axis in ('x','y')):
+        if not all(isinstance(node.get(axis),(int,float)) and math.isfinite(node[axis]) for axis in ('x','y','z')):
             errors.append('Explorer must have finite map coordinates for every analytical node')
         if node.get('degree')!=expected_degree[node['id']]:
             errors.append('Explorer node degree differs from the real graph')
     layout=explorer.get('layout',{})
-    if (layout.get('algorithm')!='ForceAtlas2' or layout.get('topology')!=topology_signature(explorer['nodes'],explorer['edges']) or
+    if (layout.get('algorithm')!='D3Force3D' or layout.get('dimensions')!=3 or layout.get('topology')!=topology_signature(explorer['nodes'],explorer['edges']) or
         layout.get('nodes')!=len(data['nodes']) or layout.get('edges')!=len(data['edges'])):
         errors.append('Explorer layout does not cover the complete analytical topology')
-    if len({(node.get('x'),node.get('y')) for node in explorer['nodes']})!=len(explorer['nodes']):
+    if len({(node.get('x'),node.get('y'),node.get('z')) for node in explorer['nodes']})!=len(explorer['nodes']):
         errors.append('Explorer map has coincident node coordinates')
-    packing=layout.get('packing',{})
-    if any(packing.get(key)!=value for key,value in {'width':168,'height':224,'gapX':80,'gapY':80}.items()):
-        errors.append('Explorer card packing dimensions differ from the visible cover footprint')
-    overlap=packed_overlap(explorer['nodes'])
-    if overlap:
-        errors.append('Explorer padded card rectangles overlap: '+' / '.join(overlap))
+    if any(max(node[axis] for node in explorer['nodes'])-min(node[axis] for node in explorer['nodes'])<100 for axis in ('x','y','z')):
+        errors.append('Explorer graph must occupy all three spatial dimensions')
     if set(dossiers['nodes'])!=ids:
         errors.append('Explorer dossiers do not cover every analytical node')
     original_books_by_id={book['id']:book for book in data['books']}
