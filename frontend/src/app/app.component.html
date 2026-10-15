@@ -11,16 +11,14 @@
     } @else if(!data()){
       <section class="load-state" role="status"><span class="loading-sign">✳</span><h1>Собираем связи.</h1><p>50 книг. Одно пространство мысли.</p></section>
     } @else {
-      <app-network class="network-surface" [nodes]="nodes()" [edges]="edges()" [activeId]="selectedId()" [focusId]="focusId()" [zoomAction]="zoomAction()" (nodeSelect)="select($event)"/>
-      <div class="map-intro"><div class="micro"><i></i> СВЯЗАННОЕ ИЗДАНИЕ / 001</div><h1>Атлас<br><em>дискурса.</em></h1><p>Мысль существует<br>между мыслями.</p><span class="intro-rule"></span><div class="intro-note">Книги, идеи и их пересечения.<br>Единая карта реальных связей.</div></div>
-      <div class="map-edition"><span>50 КНИГ</span><b>2002—2026</b><span>ОТКРЫТЫЙ КОРПУС</span></div>
-      <div class="map-guide"><span class="guide-cross" aria-hidden="true">+</span><p>Приближайте, перемещайтесь,<br>открывайте узлы как статьи.</p><button (click)="openIndex()">Найти свою точку входа<ui-icon name="diagonal"/></button></div>
-      @if(featured();as node){<button class="featured-article" (click)="select(node.id)"><span class="micro">ПЕРВЫЙ МАРШРУТ <span>↗</span></span><h2>{{node.label}}</h2><span class="featured-bottom">ЧИТАТЬ УЗЕЛ <span>{{node.degree}} {{connectionLabel(node.degree)}}</span></span></button>}
-      <div class="camera-controls" role="group" aria-label="Управление картой"><button aria-label="Увеличить карту" (click)="mapAction('in')"><ui-icon name="plus"/></button><button aria-label="Уменьшить карту" (click)="mapAction('out')"><ui-icon name="minus"/></button><span></span><button aria-label="Вместить всю карту" (click)="mapAction('fit')"><ui-icon name="reset"/></button></div>
-      <div class="map-axis" aria-hidden="true">СВЯЗИ / СМЫСЛЫ / ПЕРЕСЕЧЕНИЯ</div>
+      <h1 class="sr-only">Атлас дискурса — единая карта журнальных материалов</h1>
+      <app-network class="network-surface" [nodes]="nodes()" [edges]="edges()" [activeId]="selectedId()" [focusId]="focusId()" [zoomAction]="zoomAction()" [motionPaused]="!motionEnabled()||dialogOpen()" (nodeSelect)="select($event)"/>
+      <div class="map-caption" aria-hidden="true"><span>СВЯЗАННОЕ ИЗДАНИЕ</span><i></i><span>50 КНИГ / 2002—2026</span></div>
+      <p class="map-gesture-hint">Потяните полотно. Приближайте. Открывайте обложки.</p>
+      <div class="camera-controls" role="group" aria-label="Управление картой"><button aria-label="Увеличить карту" (click)="mapAction('in')"><ui-icon name="plus"/></button><button aria-label="Уменьшить карту" (click)="mapAction('out')"><ui-icon name="minus"/></button><span></span><button class="camera-text" aria-label="Вместить всю карту" (click)="mapAction('fit')"><ui-icon name="reset"/><span>Вся карта</span></button><button class="camera-text camera-read" (click)="startReading()"><span>Читать карту</span><ui-icon name="diagonal"/></button></div>
     }
   </main>
-  <footer class="map-status"><span class="status-title"><i></i> ВСЯ СЕТЬ В ОДНОМ СЛОЕ</span><span>{{nodes().length | number}} УЗЛОВ <b> / </b> {{edges().length | number}} СВЯЗЕЙ</span><div class="edge-legend"><span><i></i>Текстовая отсылка</span><span><i></i>Аналитическая связь</span></div><span class="status-version">АТЛАС / 02</span></footer>
+  <footer class="map-status"><span class="status-title"><i></i> ОДНА ПЛОСКОСТЬ</span><span>{{nodes().length | number}} ОБЛОЖЕК <b> / </b> {{edges().length | number}} СВЯЗЕЙ</span><div class="edge-legend"><span><i></i>Текстовая отсылка</span><span><i></i>Аналитическая связь</span></div><button class="motion-switch" [attr.aria-pressed]="motionEnabled()" [attr.aria-label]="motionEnabled()?'Приостановить движение карты':'Включить движение карты'" (click)="motionEnabled.set(!motionEnabled())"><span class="motion-symbol" [class.paused]="!motionEnabled()" aria-hidden="true">≈</span><span>{{motionEnabled()?'Движение':'Пауза'}}</span></button></footer>
 </div>
 
 @if(indexOpen()){
@@ -55,15 +53,15 @@
         <section id="article-context" class="article-context"><div class="section-kicker"><span>01</span><h2>Контекст</h2></div>
           @if(dossierLoading()){<p class="article-loading" role="status">Открываем полную версию материала…</p>}
           @if(dossierError()){<p class="article-loading">Не удалось загрузить полный материал. <button (click)="loadDossiers()">Повторить</button></p>}
-          @if(articleIntro()){<p class="article-lead">{{articleIntro()}}</p>}
-          @for(section of articleSections();track $index){<div class="article-section"><h3>{{section.label}}</h3><p>{{section.text}}</p></div>}
+          @if(articleIntro()){<div class="article-lead">@for(paragraph of articleParagraphs();track $index){<p>{{paragraph}}</p>}</div>}
+          @for(section of articleSections();track $index){<div class="article-section"><h3>{{section.label}}</h3>@for(paragraph of paragraphs(section.text,section.paragraphs);track $index){<p>{{paragraph}}</p>}</div>}
           @if(!articleIntro()&&!articleSections().length&&!dossierLoading()){<p class="article-lead">Этот узел раскрывается через цитаты и связи с другими материалами корпуса.</p>}
           @if(sourceBooks().length){<div class="source-books"><span class="micro">КНИГИ В КОНТЕКСТЕ</span><div>@for(book of sourceBooks();track book.id){<button (click)="select(book.id)">{{book.title}}<small>{{book.year || 'б. д.'}}</small><ui-icon name="diagonal"/></button>}</div></div>}
         </section>
         <section id="article-evidence" class="article-evidence"><div class="section-kicker"><span>02</span><h2>Голос источника</h2><span class="section-total">{{selectedRefs().length}}{{!searchLoaded()?'+':''}} ОПОР</span></div>
           @if(searchLoading()){<p class="article-loading" role="status">Загружаем все цитатные опоры…</p>}
           @if(searchError()){<p class="article-loading">Полный индекс цитат не загрузился. <button (click)="loadSearch()">Повторить</button></p>}
-          <div class="evidence-grid">@for(ref of selectedRefs().slice(0,quoteLimit());track refKey(ref);let i=$index){<figure class="evidence-card"><span class="micro">ФРАГМЕНТ / {{(i+1).toString().padStart(2,'0')}}</span><blockquote>«{{ref.excerpt}}»</blockquote>@if(ref.author){<p class="quote-voice">Автор фрагмента: {{ref.author}}</p>}@if(ref.note){<p class="quote-note">{{ref.note}}</p>}<figcaption><a [href]="ref.url" target="_blank" rel="noopener">{{bookTitle(ref.book)}}<span>{{ref.locator}}<ui-icon name="diagonal"/></span></a></figcaption></figure>}</div>
+          <div class="evidence-grid">@for(ref of selectedRefs().slice(0,quoteLimit());track refKey(ref);let i=$index){<figure class="evidence-card"><span class="micro">ФРАГМЕНТ / {{(i+1).toString().padStart(2,'0')}}</span><blockquote>@for(paragraph of paragraphs(ref.excerpt,ref.paragraphs);track $index;let first=$first;let last=$last){<p>{{first?'«':''}}{{paragraph}}{{last?'»':''}}</p>}</blockquote>@if(ref.author){<p class="quote-voice">Автор фрагмента: {{ref.author}}</p>}@if(ref.note){<p class="quote-note">{{ref.note}}</p>}<figcaption><a [href]="ref.url" target="_blank" rel="noopener">{{bookTitle(ref.book)}}<span>{{ref.locator}}<ui-icon name="diagonal"/></span></a></figcaption></figure>}</div>
           @if(selectedRefs().length>quoteLimit()){<button class="article-more" (click)="more('quotes')">Ещё цитатные опоры <span>{{selectedRefs().length-quoteLimit()}} осталось</span><ui-icon name="plus"/></button>}
           @if(!selectedRefs().length&&searchLoaded()){<p class="article-empty">Для этого узла отдельные цитатные фрагменты не размечены. Его контекст можно проследить по соседним материалам.</p>}
         </section>

@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 
 from inline_data import pack_inline, unpack_inline
-from build_explorer_data import build_explorer_data
+from build_explorer_data import build_explorer_data, display_paragraphs
 
 
 def source_slug(locator):
@@ -70,7 +70,9 @@ def render_sources(data, site):
                 if note:
                     parts.append('<p><small>'+html.escape(note)+'</small></p>')
                 if excerpt:
-                    parts.append('<blockquote>'+html.escape(excerpt)+'</blockquote>')
+                    paragraphs = ''.join('<p>'+html.escape(paragraph)+'</p>'
+                                         for paragraph in display_paragraphs(excerpt))
+                    parts.append('<blockquote>'+paragraphs+'</blockquote>')
                 else:
                     parts.append('<p><small>Адрес внесён в разметку без отдельной цитаты.</small></p>')
             parts.append('</section>')

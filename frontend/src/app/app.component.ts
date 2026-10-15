@@ -7,9 +7,9 @@ import { NodeCoverComponent } from './node-cover.component';
 interface Book { id:string; title:string; year:number|null; counts:Record<string,number>; connections:string[]; }
 interface AtlasNode { id:string; type:string; label:string; description:string; books:string[]; refIds:number[]; x:number; y:number; degree:number; }
 interface Edge { source:string; target:string; analytical:boolean; }
-interface Reference { book:string; locator:string; excerpt:string; url:string; nodeIds?:string[]; author?:string; note?:string; }
+interface Reference { book:string; locator:string; excerpt:string; paragraphs?:string[]; url:string; nodeIds?:string[]; author?:string; note?:string; }
 interface Atlas { version:string; stats:Record<string,number>; books:Book[]; nodes:AtlasNode[]; edges:Edge[]; references:Reference[]; }
-interface Dossier { description:string; sections:{label:string;text:string}[]; }
+interface Dossier { description:string; descriptionParagraphs?:string[]; sections:{label:string;text:string;paragraphs?:string[]}[]; }
 interface Dossiers { nodes:Record<string,Dossier>; edges:(Edge & {relation?:string})[]; }
 type IndexMode='all'|'books'|'saved';
 
@@ -37,6 +37,7 @@ export class AppComponent {
   readonly dossierError=signal(false);
   readonly shareState=signal('');
   readonly shareFallback=signal('');
+  readonly motionEnabled=signal(!window.matchMedia('(prefers-reduced-motion: reduce)').matches);
   readonly saved=signal<string[]>(this.readSaved());
   readonly types:Record<string,string>={book:'Книга',theme:'Тема',construct:'Понятие',thinker:'Автор',experiment:'Исследовательский эпизод',code:'Тематический код',proposition:'Тезис',chain_step:'Звено аргумента',trajectory_stage:'Стадия понятия',work:'Работа',citation:'Библиографическая запись'};
   readonly nodes=computed(()=>this.data()?.nodes??[]);
@@ -47,6 +48,7 @@ export class AppComponent {
   readonly selectedBook=computed(()=>this.bookMap().get(this.selectedId()??''));
   readonly dossier=computed(()=>this.dossiers()?.nodes[this.selectedId()??'']??null);
   readonly articleIntro=computed(()=>this.dossier()?.description||this.selected()?.description||'');
+  readonly articleParagraphs=computed(()=>this.paragraphs(this.articleIntro(),this.dossier()?.descriptionParagraphs));
   readonly articleSections=computed(()=>(this.dossier()?.sections??[]).filter(s=>s.text&&s.text!==this.articleIntro()));
   readonly featured=computed(()=>this.nodes().find(n=>n.type==='theme'&&this.normalize(n.label).includes('системное мышление'))??this.nodes().find(n=>n.type==='theme'));
   readonly quoteIndex=computed(()=>{
@@ -105,6 +107,8 @@ export class AppComponent {
     setTimeout(()=>{document.getElementById('journal-scroll')?.scrollTo({top:0});document.getElementById('journal-title')?.focus({preventScroll:true});});
   }
   showOnMap(){this.journalOpen.set(false);this.indexOpen.set(false);const id=this.selectedId();if(id&&this.focusId()===id)this.network?.focusNode(id);else this.focusId.set(id);this.focusMap();}
+  startReading(){this.selectedId.set(null);this.focusId.set(null);history.replaceState(null,'',location.pathname+location.search);this.network?.readMap();this.focusMap();}
+  paragraphs(text:string,blocks?:string[]){return blocks?.length?blocks:text?[text]:[];}
   mapAction(kind:'in'|'out'|'fit'){this.zoomAction.set({kind,seq:++this.actionSequence});if(kind==='fit'){this.selectedId.set(null);this.focusId.set(null);history.replaceState(null,'',location.pathname+location.search);}}
   closeDialog(){this.indexOpen.set(false);this.aboutOpen.set(false);this.journalOpen.set(false);setTimeout(()=>{if(this.returnFocus?.isConnected)this.returnFocus.focus();else this.focusMap();});}
   captureFocus(){if(!this.dialogOpen())this.returnFocus=document.activeElement as HTMLElement;}

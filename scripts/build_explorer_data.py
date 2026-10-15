@@ -53,6 +53,7 @@ def search_references(data):
 def export_reference(ref):
     result = {'book': ref['book'], 'locator': ref['locator'],
               'excerpt': ref.get('excerpt', ''),
+              'paragraphs': display_paragraphs(ref.get('excerpt', '')),
               'url': f"sources/{ref['book']}.html#{source_slug(ref['locator'])}"}
     if ref.get('source_context_author'):
         result['author'] = ref['source_context_author']
@@ -177,6 +178,66 @@ ENUM_FIELDS = {'kind', 'source_role', 'merge_mode', 'connection_status', 'status
                'source_region', 'attribution_status', 'temporal_relation_to_previous',
                'reference_role'}
 ID_TOKEN = re.compile(r'\b[A-Za-z][A-Za-z0-9]+\b')
+SOFT_WRAP = re.compile('\u00ad[ \\t]*\\n[ \\t\\n]*')
+SENTENCE_END = re.compile(r'''[.!?…]+[»”"')\]]*(?=\s+[«“"'(\[]?[A-ZА-ЯЁ])''')
+ABBREVIATIONS = {'г', 'гг', 'в', 'вв', 'т', 'п', 'д', 'др', 'пр', 'им', 'акад',
+                 'проф', 'доц', 'ред', 'пер', 'стр', 'рис', 'см', 'ср', 'табл',
+                 'ч', 'л', 'с', 'сост', 'изд', 'напр', 'обл', 'р', 'гл', 'p',
+                 'pp', 'ed', 'eds', 'vol', 'fig', 'etc', 'e', 'i'}
+
+
+def normalized_display_text(text):
+    """Only layout whitespace and discretionary hyphen wraps may change."""
+    text = SOFT_WRAP.sub('', str(text).replace('\r\n', '\n').replace('\r', '\n'))
+    return ' '.join(text.split())
+
+
+def prose_paragraphs(text):
+    """Editorial breaks between complete sentences, never inside a citation.
+
+    Ambiguous abbreviations and initials are retained in the current sentence.
+    Every character other than layout whitespace remains in the same order.
+    """
+    if len(text) <= 500:
+        return [text] if text else []
+    boundaries = []
+    for match in SENTENCE_END.finditer(text):
+        preceding = re.search(r'([A-Za-zА-Яа-яЁё]+)$', text[:match.start()])
+        token = preceding[1] if preceding else ''
+        if text[match.start()] == '.' and (len(token) == 1 or token.casefold() in ABBREVIATIONS):
+            continue
+        boundaries.append(match.end())
+    sentences, start = [], 0
+    for end in boundaries:
+        sentences.append(text[start:end].strip())
+        start = end
+    if text[start:].strip():
+        sentences.append(text[start:].strip())
+    paragraphs, current = [], ''
+    for sentence in sentences:
+        if current and len(current) >= 240 and len(current) + len(sentence) + 1 > 500:
+            paragraphs.append(current)
+            current = sentence
+        else:
+            current = (current + ' ' + sentence).strip()
+    if current:
+        paragraphs.append(current)
+    return paragraphs
+
+
+def display_paragraphs(text, *, editorial=False):
+    """Expose genuine blank lines and remove OCR line wrapping for display.
+
+    The exact source string remains in excerpt, description or section.text.
+    Hard hyphens are intentionally retained: their lexical role is ambiguous.
+    """
+    text = SOFT_WRAP.sub('', str(text).replace('\r\n', '\n').replace('\r', '\n'))
+    result = []
+    for group in re.split(r'\n[ \t]*\n(?:[ \t]*\n)*', text):
+        paragraph = normalized_display_text(group)
+        if paragraph:
+            result.extend(prose_paragraphs(paragraph) if editorial else [paragraph])
+    return result
 
 
 def named_references(text, labels):
@@ -220,6 +281,26 @@ def semantic_text(value, labels=None, field=None):
     return '\n'.join(lines)
 
 
+def semantic_paragraphs(value, labels=None, field=None):
+    """Keep array and named-field boundaries instead of flattening them."""
+    if isinstance(value, list):
+        # Bibliographic line arrays are physical OCR lines, not paragraphs.
+        if field == 'lines':
+            return display_paragraphs('\n'.join(semantic_text(row, labels, field) for row in value))
+        return [paragraph for row in value for paragraph in semantic_paragraphs(row, labels, field)]
+    if isinstance(value, dict):
+        result = []
+        for key, row in value.items():
+            if key in INTERNAL_FIELDS:
+                continue
+            caption = SECTION_LABELS.get(key) or (labels or {}).get(key)
+            paragraphs = semantic_paragraphs(row, labels, key) if caption else []
+            if paragraphs:
+                result.extend([f'{caption}: {paragraphs[0]}', *paragraphs[1:]])
+        return result
+    return display_paragraphs(semantic_text(value, labels, field), editorial=True)
+
+
 def export_dossier(node, book=None, labels=None):
     metadata = without_references({key: value for key, value in node.items()
                                    if key not in ('id', 'type', 'label')})
@@ -233,14 +314,18 @@ def export_dossier(node, book=None, labels=None):
         text = semantic_text(metadata.get(key), labels, key)
         if text and text not in displayed:
             displayed.add(text)
-            sections.append({'label': SECTION_LABELS[key], 'text': text})
+            sections.append({'label': SECTION_LABELS[key], 'text': text,
+                             'paragraphs': semantic_paragraphs(metadata.get(key), labels, key)})
     # A single role is often identical to the description or one of the roles.
     role = semantic_text(metadata.get('role'), labels, 'role')
     if role and role not in displayed and role not in (metadata.get('roles') or []):
-        sections.append({'label': SECTION_LABELS['role'], 'text': role})
+        sections.append({'label': SECTION_LABELS['role'], 'text': role,
+                         'paragraphs': semantic_paragraphs(metadata.get('role'), labels, 'role')})
     if book:
-        sections.insert(0, {'label': 'Датировка издания', 'text': book['date_note']})
-    return {'description': description, 'sections': sections, 'metadata': metadata}
+        sections.insert(0, {'label': 'Датировка издания', 'text': book['date_note'],
+                            'paragraphs': display_paragraphs(book['date_note'], editorial=True)})
+    return {'description': description, 'descriptionParagraphs': display_paragraphs(description, editorial=True),
+            'sections': sections, 'metadata': metadata}
 
 
 def build_explorer_data(project, data=None):

@@ -1,6 +1,6 @@
 """Verify relative links, anchors, private paths, graph consistency and packing."""
 from html.parser import HTMLParser
-from collections import Counter
+from collections import Counter, defaultdict
 import json
 import math
 import os
@@ -10,7 +10,9 @@ from urllib.parse import unquote, urlsplit
 import xml.etree.ElementTree as ET
 from inline_data import unpack_inline
 from build_explorer_data import (ID_TOKEN, export_dossier, export_reference, reference_key,
-                                 search_references, topology_signature, without_references)
+                                 search_references, topology_signature, without_references,
+                                 normalized_display_text)
+from build_site import collect_references
 
 
 class Page(HTMLParser):
@@ -18,6 +20,8 @@ class Page(HTMLParser):
         super().__init__()
         self.ids, self.links = set(), []
         self.collisions = []
+        self.quotations = []
+        self.quotation = None
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
         if 'id' in attrs:
@@ -28,6 +32,39 @@ class Page(HTMLParser):
             self.links.append(attrs['href'])
         if tag in ('script', 'img') and attrs.get('src'):
             self.links.append(attrs['src'])
+        if tag == 'blockquote':
+            self.quotation = []
+    def handle_data(self, data):
+        if self.quotation is not None:
+            self.quotation.append(data)
+    def handle_endtag(self, tag):
+        if self.quotation is not None and tag == 'p':
+            self.quotation.append(' ')
+        if self.quotation is not None and tag == 'blockquote':
+            self.quotations.append(normalized_display_text(''.join(self.quotation)))
+            self.quotation = None
+
+
+def packed_overlap(nodes, width=248, height=304):
+    """An occupied cell can contain only one nonoverlapping padded center."""
+    buckets = defaultdict(list)
+    for node in nodes:
+        x, y = node.get('x'), node.get('y')
+        if not isinstance(x,(int,float)) or not isinstance(y,(int,float)) or not math.isfinite(x+y):
+            continue
+        cx, cy = math.floor(x/width), math.floor(y/height)
+        for dx in (-1,0,1):
+            for dy in (-1,0,1):
+                for other in buckets[(cx+dx,cy+dy)]:
+                    if abs(x-other['x'])<width and abs(y-other['y'])<height:
+                        return (other['id'],node['id'])
+        buckets[(cx,cy)].append(node)
+    return None
+
+
+def complete_paragraphs(raw, paragraphs):
+    return (isinstance(paragraphs,list) and all(isinstance(value,str) for value in paragraphs)
+            and normalized_display_text(' '.join(paragraphs))==normalized_display_text(raw))
 
 
 def check(project):
@@ -135,6 +172,12 @@ def check(project):
         errors.append('Explorer layout does not cover the complete analytical topology')
     if len({(node.get('x'),node.get('y')) for node in explorer['nodes']})!=len(explorer['nodes']):
         errors.append('Explorer map has coincident node coordinates')
+    packing=layout.get('packing',{})
+    if any(packing.get(key)!=value for key,value in {'width':168,'height':224,'gapX':80,'gapY':80}.items()):
+        errors.append('Explorer card packing dimensions differ from the visible cover footprint')
+    overlap=packed_overlap(explorer['nodes'])
+    if overlap:
+        errors.append('Explorer padded card rectangles overlap: '+' / '.join(overlap))
     if set(dossiers['nodes'])!=ids:
         errors.append('Explorer dossiers do not cover every analytical node')
     original_books_by_id={book['id']:book for book in data['books']}
@@ -143,6 +186,11 @@ def check(project):
         if dossiers['nodes'].get(node['id'])!=export_dossier(node, original_books_by_id.get(node['id']), original_labels):
             errors.append('Explorer dossier changed or truncated original semantic fields')
     for dossier in dossiers['nodes'].values():
+        if not complete_paragraphs(dossier['description'],dossier.get('descriptionParagraphs')):
+            errors.append('Explorer description paragraphs dropped or changed text')
+        for section in dossier['sections']:
+            if not complete_paragraphs(section['text'],section.get('paragraphs')):
+                errors.append('Explorer section paragraphs dropped or changed text')
         displayed=[dossier['description'],*(section['text'] for section in dossier['sections'])]
         if any(token in ids for text in displayed for token in ID_TOKEN.findall(text)):
             errors.append('Explorer dossier displays a raw graph identifier instead of its real label')
@@ -191,11 +239,26 @@ def check(project):
         original=export_reference(expected_search[key]['ref'])
         if any(ref.get(field)!=original.get(field) for field in ('book','locator','excerpt','url','author','note')):
             errors.append('Explorer changed quotation wording or source context')
+        if ref.get('paragraphs')!=original['paragraphs'] or not complete_paragraphs(ref['excerpt'],ref.get('paragraphs')):
+            errors.append('Explorer quotation paragraphs changed or truncated original words')
         url=urlsplit(ref['url'])
         target=(site/url.path).resolve()
         if target not in pages or url.fragment not in pages[target].ids:
             errors.append('Explorer quotation source link is missing')
         checked_links+=1
+    source_quotes=defaultdict(Counter)
+    source_seen=set()
+    for ref in collect_references(data):
+        if not ref.get('excerpt'):
+            continue
+        identity=(ref['book'],ref['locator'],ref['excerpt'],ref.get('source_context_author',''),ref.get('source_context_note',''))
+        if identity not in source_seen:
+            source_seen.add(identity)
+            source_quotes[ref['book']][normalized_display_text(ref['excerpt'])]+=1
+    for book in data['books']:
+        page=pages.get((site/'sources'/f"{book['id']}.html").resolve())
+        if page is None or Counter(page.quotations)!=source_quotes[book['id']]:
+            errors.append('Source page display lost or changed complete quotation text: '+book['id'])
     if (site/'explorer-data.json').stat().st_size>3_500_000:
         errors.append('Explorer initial data exceeds the 3.5 MB budget')
     result={'passed':not errors,'html_pages':len(pages),'relative_links_checked':checked_links,'public_paths_clean':not private_paths,'original_books_absent':not originals,'inline_roundtrip':not any('inline' in e.lower() for e in errors),'graphml_counts':graph_counts,'book_profiles':len(data['book_navigation']['profiles']),'explorer_nodes':len(explorer['nodes']),'explorer_edges':len(explorer['edges']),'dossiers':len(dossiers['nodes']),'layout_algorithm':layout.get('algorithm'),'search_quotes':len(search['references']),'errors':errors}
