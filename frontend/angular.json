@@ -1,0 +1,43 @@
+{
+  "$schema": "./node_modules/@angular/cli/lib/config/schema.json",
+  "version": 1,
+  "cli": { "analytics": false },
+  "projects": {
+    "explorer": {
+      "projectType": "application",
+      "root": "",
+      "sourceRoot": "src",
+      "architect": {
+        "build": {
+          "builder": "@angular/build:application",
+          "options": {
+            "outputPath": "dist",
+            "index": "src/index.html",
+            "browser": "src/main.ts",
+            "tsConfig": "tsconfig.json",
+            "styles": ["src/styles.css"],
+            "baseHref": "./",
+            "assets": [
+              { "glob": "explorer-data.json", "input": "../site", "output": "/" },
+              { "glob": "explorer-search.json", "input": "../site", "output": "/" },
+              { "glob": "legacy.html", "input": "../site", "output": "/" },
+              { "glob": "**/*", "input": "../site/sources", "output": "/sources" }
+            ]
+          },
+          "configurations": {
+            "production": {
+              "outputHashing": "all",
+              "budgets": [{ "type": "initial", "maximumWarning": "650kB", "maximumError": "1MB" }]
+            },
+            "development": { "optimization": false, "sourceMap": true }
+          },
+          "defaultConfiguration": "production"
+        },
+        "serve": {
+          "builder": "@angular/build:dev-server",
+          "options": { "buildTarget": "explorer:build:development" }
+        }
+      }
+    }
+  }
+}

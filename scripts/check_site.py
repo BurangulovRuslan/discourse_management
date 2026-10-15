@@ -1,11 +1,13 @@
 """Verify relative links, anchors, private paths, graph consistency and packing."""
 from html.parser import HTMLParser
 import json
+import os
 from pathlib import Path
 import re
 from urllib.parse import unquote, urlsplit
 import xml.etree.ElementTree as ET
 from inline_data import unpack_inline
+from build_explorer_data import export_reference, reference_key, search_references
 
 
 class Page(HTMLParser):
@@ -19,8 +21,10 @@ class Page(HTMLParser):
             if attrs['id'] in self.ids:
                 self.collisions.append(attrs['id'])
             self.ids.add(attrs['id'])
-        if tag == 'a' and attrs.get('href'):
+        if tag in ('a', 'link') and attrs.get('href'):
             self.links.append(attrs['href'])
+        if tag in ('script', 'img') and attrs.get('src'):
+            self.links.append(attrs['src'])
 
 
 def check(project):
@@ -49,9 +53,15 @@ def check(project):
             checked_links += 1
     # Audit the entire distributable, including scripts and analytical exports.
     private_paths, originals = [], []
-    for path in project.rglob('*'):
-        if not path.is_file() or '.git' in path.parts:
-            continue
+    audit_files = []
+    for directory, dirs, filenames in os.walk(project):
+        # Dependencies and compiler caches are neither source snapshots nor
+        # distributed content. Walking node_modules also makes audits needlessly
+        # expensive and flags third-party documentation as project material.
+        dirs[:] = [name for name in dirs if name not in
+                   ('.git', 'frontend', 'node_modules', '__pycache__', '.angular')]
+        audit_files.extend(Path(directory) / name for name in filenames)
+    for path in audit_files:
         if path.suffix.lower() in ('.md','.markdown') and path.relative_to(project).as_posix()!='README.md':
             errors.append('Only the project README may be included as Markdown: '+str(path.relative_to(project)))
         if path.suffix.lower() in ('.pdf','.fb2','.doc','.docx','.rtf','.epub'):
@@ -65,12 +75,16 @@ def check(project):
     if originals:
         errors.append('Book files in package: '+str(originals))
     data=json.loads((site/'atlas-data.json').read_text(encoding='utf-8'))
-    raw=(site/'index.html').read_text(encoding='utf-8')
+    raw=(site/'legacy.html').read_text(encoding='utf-8')
     if data.get('publication_mode')=='public' and 'data-tab="sources"' in raw:
         errors.append('Corpus/method navigation must be absent from the public build')
     embedded=json.loads(re.search(r'<script id="atlas-data" type="application/json">(.*?)</script>',raw,re.S)[1])
     if unpack_inline(embedded)!=data:
-        errors.append('Inline data differs from JSON export')
+        errors.append('Legacy inline data differs from JSON export')
+    if '<app-root' not in (site/'index.html').read_text(encoding='utf-8'):
+        errors.append('The Angular main interface has not been built')
+    if 'href="index.html"' not in raw:
+        errors.append('Legacy must provide a return link to the main interface')
     ns={'g':'http://graphml.graphdrawing.org/xmlns'}
     graph=ET.parse(site/'kurpatov.graphml')
     graph_counts=(len(graph.findall('.//g:node',ns)),len(graph.findall('.//g:edge',ns)))
@@ -86,7 +100,72 @@ def check(project):
             for nid,refs in rows.items():
                 if nid not in ids or not refs or any(r['book']!=profile['id'] for r in refs):
                     errors.append('Invalid book-scoped reference')
-    result={'passed':not errors,'html_pages':len(pages),'relative_links_checked':checked_links,'public_paths_clean':not private_paths,'original_books_absent':not originals,'inline_roundtrip':not any('Inline' in e for e in errors),'graphml_counts':graph_counts,'book_profiles':len(data['book_navigation']['profiles']),'errors':errors}
+    explorer=json.loads((site/'explorer-data.json').read_text(encoding='utf-8'))
+    search=json.loads((site/'explorer-search.json').read_text(encoding='utf-8'))
+    book_ids={book['id'] for book in data['books']}
+    explorer_ids={node['id'] for node in explorer['nodes']}
+    if explorer_ids!=ids or len(explorer['nodes'])!=len(data['nodes']):
+        errors.append('Explorer node topology differs')
+    if {book['id'] for book in explorer['books']}!=book_ids:
+        errors.append('Explorer book coverage differs')
+    expected_edges=[{key: edge[key] for key in ('source','target','analytical')} for edge in data['edges']]
+    if explorer['edges']!=expected_edges:
+        errors.append('Explorer edge topology or evidence mode differs')
+    original_nodes={node['id']:node for node in data['nodes']}
+    for node in explorer['nodes']:
+        if node['label']!=original_nodes[node['id']]['label'] or node['type']!=original_nodes[node['id']]['type']:
+            errors.append('Explorer changed an analytical node label or type')
+        if not set(node['books']).issubset(book_ids) or any(not isinstance(index,int) or index<0 or index>=len(explorer['references']) for index in node['refIds']):
+            errors.append('Explorer has invalid book or quotation identifiers')
+    expected_search=search_references(data)
+    expected_keys=set(expected_search)
+
+    def exported_key(ref):
+        return reference_key({**ref,'source_context_author':ref.get('author','')})
+
+    search_keys={exported_key(ref) for ref in search['references']}
+    if search_keys!=expected_keys or len(search['references'])!=len(expected_keys):
+        errors.append('Explorer search does not exactly cover Legacy quotations')
+    for node in explorer['nodes']:
+        for index in node['refIds']:
+            if not isinstance(index,int) or index<0 or index>=len(explorer['references']):
+                continue
+            row=expected_search.get(exported_key(explorer['references'][index]))
+            if not row or node['id'] not in row['nodeIds']:
+                errors.append('Explorer assigned a quotation to an unrelated node')
+    profiles={profile['id']:profile for profile in data['book_navigation']['profiles']}
+    original_books={book['id']:book for book in data['books']}
+    for book in explorer['books']:
+        if book['id'] not in profiles:
+            continue
+        profile=profiles[book['id']]
+        connections={node_id for group in profile['connections'].values() for node_id in group}
+        if set(book['connections'])!=connections or book['counts']!=profile['counts'] or book['title']!=original_books[book['id']]['title'] or book['year']!=original_books[book['id']]['edition_year']:
+            errors.append('Explorer changed a book profile')
+    if explorer['stats']!={**data['stats'],'searchQuotes':len(expected_search)}:
+        errors.append('Explorer statistics differ from the analytical snapshot')
+    for ref in search['references']:
+        key=exported_key(ref)
+        if key not in expected_search:
+            continue
+        if set(ref['nodeIds'])!=expected_search[key]['nodeIds']:
+            errors.append('Explorer search changed quotation attribution')
+    for ref in [*explorer['references'],*search['references']]:
+        key=exported_key(ref)
+        if key not in expected_keys:
+            errors.append('Explorer introduced an unsupported quotation')
+            continue
+        original=export_reference(expected_search[key]['ref'])
+        if any(ref.get(field)!=original.get(field) for field in ('book','locator','excerpt','url','author','note')):
+            errors.append('Explorer changed quotation wording or source context')
+        url=urlsplit(ref['url'])
+        target=(site/url.path).resolve()
+        if target not in pages or url.fragment not in pages[target].ids:
+            errors.append('Explorer quotation source link is missing')
+        checked_links+=1
+    if (site/'explorer-data.json').stat().st_size>3_000_000:
+        errors.append('Explorer initial data exceeds the 3 MB budget')
+    result={'passed':not errors,'html_pages':len(pages),'relative_links_checked':checked_links,'public_paths_clean':not private_paths,'original_books_absent':not originals,'inline_roundtrip':not any('inline' in e.lower() for e in errors),'graphml_counts':graph_counts,'book_profiles':len(data['book_navigation']['profiles']),'explorer_nodes':len(explorer['nodes']),'explorer_edges':len(explorer['edges']),'search_quotes':len(search['references']),'errors':errors}
     (project/'validation.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
     print(json.dumps(result,ensure_ascii=False))
     if errors:

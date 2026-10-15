@@ -1,6 +1,7 @@
 {
   "version": "2026-10-08.v5",
   "entry": "index.html",
+  "legacy": "legacy.html",
   "publication_mode": "public",
   "stats": {
     "files": 74,
@@ -45,8 +46,8 @@
     "trajectory_stages": 31,
     "lexical_candidate_edges": 296
   },
-  "file_count": 57,
-  "bytes": 119615132,
+  "file_count": 63,
+  "bytes": 124858523,
   "files": [
     {
       "path": ".nojekyll",
@@ -55,28 +56,58 @@
     },
     {
       "path": "analytical-report.html",
-      "bytes": 2080547,
-      "sha256": "9f4538e378ca4d7d20a6fd257b51924bd1bb72b80e447d183dd8fa064a44a132"
+      "bytes": 2077737,
+      "sha256": "3548c6fb6fa72680d6dafd75b09d4ec7d79f49df9c10827d2a727ab3aefe0a9f"
+    },
+    {
+      "path": "assets/explorer/3rdpartylicenses.txt",
+      "bytes": 14957,
+      "sha256": "976ea40d0371fc9dadfd1f1dc40f50c395a87d7ef0fa9e601f00fa0319371723"
+    },
+    {
+      "path": "assets/explorer/main-G2SU4YM6.js",
+      "bytes": 197054,
+      "sha256": "8d0147e1b46c08de29591ae46811fb65e151693974972d9def085f9a5cfd336d"
+    },
+    {
+      "path": "assets/explorer/styles-YJQIMGVI.css",
+      "bytes": 28921,
+      "sha256": "21de891f6e20ef31efba505ef8c7858d5502e295aa9392cfd5fa67d977877a08"
     },
     {
       "path": "atlas-data.json",
-      "bytes": 62375313,
-      "sha256": "a0c72643bcca98195eb606f215bbad222826cd3d265b85ed5929f902a7735fe6"
+      "bytes": 61526308,
+      "sha256": "24a541a66ca04eefe1bdb91e52084cfd32c45c85e763216efd760facb64af65e"
     },
     {
       "path": "atlas.html",
-      "bytes": 212,
-      "sha256": "3ca654c0f039895a05b9258cf20106bb2425dea3d9a4eee9945e2705a9678f42"
+      "bytes": 237,
+      "sha256": "27a0c99eb20a182bb8dc1d585de3e41be48bed2e68a7634fb7daf434b9554b4e"
+    },
+    {
+      "path": "explorer-data.json",
+      "bytes": 2860321,
+      "sha256": "b5dd2bb3bb8dad5964dd3879a4570c1e450afafec7888fe0a769ad9b7b57de90"
+    },
+    {
+      "path": "explorer-search.json",
+      "bytes": 2991891,
+      "sha256": "13f3237b8eb73fa48c0ea246fee85b6f702a0581057ea48ac01f10c63fb6a8a6"
     },
     {
       "path": "index.html",
-      "bytes": 18558575,
-      "sha256": "b2a22f4d8e08a6c32ab5d979cffbf84278ba3d9e11e62fbc4b0a04e1eada0edf"
+      "bytes": 1679,
+      "sha256": "fad8908f4aace12bcff64d598028374acc5b72049eb03f9834772fe1d11563a3"
     },
     {
       "path": "kurpatov.graphml",
       "bytes": 33444941,
       "sha256": "c4499e7ca67832d4d190fae6310149f5bcb40c6120fd17d04e152399c0f32f70"
+    },
+    {
+      "path": "legacy.html",
+      "bytes": 18558933,
+      "sha256": "648abda6c1426e3feb8cf84e29176d285cdab6c66a863939b3df49c0ce844355"
     },
     {
       "path": "research-register.csv",

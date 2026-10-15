@@ -3,36 +3,59 @@ name: Publish discourse atlas
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: pages
+  group: pages-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-      - name: Build static site
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build analytical exports and Legacy
         run: python3 scripts/build_site.py
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Build and publish Angular interface
+        working-directory: frontend
+        run: npm run build
+      - name: Refresh deployment manifest
+        run: python3 scripts/build_site.py --manifest
       - name: Check links and analytical exports
         run: python3 scripts/check_site.py
-      - name: Configure Pages
-        uses: actions/configure-pages@v5
       - name: Upload site
         uses: actions/upload-pages-artifact@v4
         with:
           path: site
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
       - name: Deploy
         id: deployment
         uses: actions/deploy-pages@v4

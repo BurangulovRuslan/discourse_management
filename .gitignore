@@ -6,3 +6,6 @@ Thumbs.db
 *.[mM][dD]
 *.[mM][aA][rR][kK][dD][oO][wW][nN]
 !/README.md
+node_modules/
+.angular/
+frontend/dist/

@@ -1,5 +1,6 @@
-"""Build the standalone Pages site from its sanitized analytical snapshot."""
+"""Build Legacy, source pages and compact data before the Angular build."""
 from collections import defaultdict
+import argparse
 import hashlib
 import html
 import json
@@ -7,6 +8,7 @@ from pathlib import Path
 import re
 
 from inline_data import pack_inline, unpack_inline
+from build_explorer_data import build_explorer_data
 
 
 def source_slug(locator):
@@ -76,6 +78,16 @@ def render_sources(data, site):
         (source_dir / f'{bid}.html').write_text('\n'.join(parts), encoding='utf-8')
 
 
+def write_manifest(project, data=None):
+    site = project / 'site'
+    if data is None:
+        data = json.loads((site / 'atlas-data.json').read_text(encoding='utf-8'))
+    files = [{'path': str(p.relative_to(site)).replace('\\','/'), 'bytes': p.stat().st_size, 'sha256': hashlib.sha256(p.read_bytes()).hexdigest()} for p in sorted(site.rglob('*')) if p.is_file() and p.name != 'build-manifest.json']
+    manifest = {'version':data['version'], 'entry':'index.html', 'legacy':'legacy.html', 'publication_mode':data['publication_mode'], 'stats':data['stats'], 'file_count':len(files), 'bytes':sum(f['bytes'] for f in files), 'files':files}
+    (site / 'build-manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
+    return manifest
+
+
 def build(project):
     site, src = project / 'site', project / 'src'
     data = json.loads((site / 'atlas-data.json').read_text(encoding='utf-8'))
@@ -89,15 +101,29 @@ def build(project):
     payload = pack_inline(data)
     if unpack_inline(json.loads(payload)) != data:
         raise ValueError('Inline transport changed analytical data')
-    (site / 'index.html').write_text(template.replace('__ATLAS_DATA__', payload), encoding='utf-8')
-    (site / 'atlas.html').write_text('''<!doctype html><html lang="ru"><meta charset="utf-8"><title>Атлас</title><script>location.replace('index.html'+location.search+location.hash)</script><a href="index.html">Открыть атлас</a></html>''', encoding='utf-8')
+    legacy = template.replace('__ATLAS_DATA__', payload).replace('<body>', '''<body>
+<div style="padding:12px 4vw;background:#172e30;color:#fffefa;display:flex;gap:18px;align-items:center;flex-wrap:wrap"><a href="index.html" style="color:#fffefa;font-weight:600">← Открыть новый интерфейс</a><span style="font:13px system-ui;opacity:.8">Legacy · Полный исследовательский атлас</span></div>''', 1)
+    (site / 'legacy.html').write_text(legacy, encoding='utf-8')
+    # The frontend publisher replaces this fallback. Rebuilding analytical
+    # pages after Angular must preserve the already published new interface.
+    index = site / 'index.html'
+    if not index.exists() or '<app-root' not in index.read_text(encoding='utf-8'):
+        index.write_text('''<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Атлас дискурса</title><script>location.replace('legacy.html'+location.search+location.hash)</script><a href="legacy.html">Открыть исследовательский атлас</a></html>''', encoding='utf-8')
+    (site / 'atlas.html').write_text('''<!doctype html><html lang="ru"><meta charset="utf-8"><title>Атлас · Legacy</title><script>location.replace('legacy.html'+location.search+location.hash)</script><a href="legacy.html">Открыть полный атлас</a></html>''', encoding='utf-8')
     (site / '.nojekyll').write_text('', encoding='utf-8')
     render_sources(data, site)
-    files = [{'path': str(p.relative_to(site)).replace('\\','/'), 'bytes': p.stat().st_size, 'sha256': hashlib.sha256(p.read_bytes()).hexdigest()} for p in sorted(site.rglob('*')) if p.is_file() and p.name != 'build-manifest.json']
-    manifest = {'version':data['version'], 'entry':'index.html', 'publication_mode':data['publication_mode'], 'stats':data['stats'], 'file_count':len(files), 'bytes':sum(f['bytes'] for f in files), 'files':files}
-    (site / 'build-manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
-    print(json.dumps({'entry':'site/index.html','files':len(files),'site_bytes':manifest['bytes'],'inline_bytes':len(payload.encode('utf-8'))},ensure_ascii=False))
+    explorer = build_explorer_data(project, data)
+    manifest = write_manifest(project, data)
+    print(json.dumps({'entry':'site/index.html','legacy':'site/legacy.html','files':manifest['file_count'],'site_bytes':manifest['bytes'],'inline_bytes':len(payload.encode('utf-8')),'explorer':explorer},ensure_ascii=False))
 
 
 if __name__ == '__main__':
-    build(Path(__file__).resolve().parents[1])
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--manifest', action='store_true', help='Refresh hashes after publishing Angular assets')
+    args = parser.parse_args()
+    project = Path(__file__).resolve().parents[1]
+    if args.manifest:
+        manifest = write_manifest(project)
+        print(json.dumps({'files': manifest['file_count'], 'site_bytes': manifest['bytes']}))
+    else:
+        build(project)
