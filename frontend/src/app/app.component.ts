@@ -1,159 +1,134 @@
 import { Component, computed, signal, HostListener, ElementRef, ViewChild } from '@angular/core';
 import { DecimalPipe } from '@angular/common';
 import { IconComponent } from './icon.component';
-import { RhizomeComponent } from './rhizome.component';
+import { NetworkComponent } from './network.component';
+import { NodeCoverComponent } from './node-cover.component';
 
-interface Book { id: string; title: string; year: number | null; dateNote?: string; counts: Record<string,number>; connections: string[]; }
-interface AtlasNode { id: string; type: string; label: string; description: string; books: string[]; refIds: number[]; }
-interface Reference { book: string; locator: string; excerpt: string; url: string; nodeIds?: string[]; author?: string; note?: string; }
-interface Atlas { version: string; stats: Record<string,number>; books: Book[]; nodes: AtlasNode[]; edges: {source:string;target:string;analytical:boolean}[]; references: Reference[]; }
-type View = 'map' | 'books' | 'saved';
+interface Book { id:string; title:string; year:number|null; counts:Record<string,number>; connections:string[]; }
+interface AtlasNode { id:string; type:string; label:string; description:string; books:string[]; refIds:number[]; x:number; y:number; degree:number; }
+interface Edge { source:string; target:string; analytical:boolean; }
+interface Reference { book:string; locator:string; excerpt:string; url:string; nodeIds?:string[]; author?:string; note?:string; }
+interface Atlas { version:string; stats:Record<string,number>; books:Book[]; nodes:AtlasNode[]; edges:Edge[]; references:Reference[]; }
+interface Dossier { description:string; sections:{label:string;text:string}[]; }
+interface Dossiers { nodes:Record<string,Dossier>; edges:(Edge & {relation?:string})[]; }
+type IndexMode='all'|'books'|'saved';
 
-@Component({
-  selector: 'app-root', standalone: true, imports: [IconComponent, RhizomeComponent, DecimalPipe],
-  templateUrl: './app.component.html'
-})
+@Component({selector:'app-root',standalone:true,imports:[IconComponent,NetworkComponent,NodeCoverComponent,DecimalPipe],templateUrl:'./app.component.html'})
 export class AppComponent {
-  readonly data = signal<Atlas | null>(null);
-  readonly loadError = signal(false);
-  readonly view = signal<View>('map');
-  readonly selectedId = signal<string | null>(null);
-  readonly filter = signal('all');
-  readonly zoom = signal(1);
-  readonly paused = signal(false);
-  readonly menuOpen = signal(false);
-  readonly searchOpen = signal(false);
-  readonly aboutOpen = signal(false);
-  readonly query = signal('');
-  readonly libraryQuery = signal('');
-  readonly period = signal('all');
-  readonly fullReferences = signal<Reference[]>([]);
-  readonly searchLoading = signal(false);
-  readonly searchError = signal(false);
-  readonly searchLoaded = signal(false);
-  readonly saved = signal<string[]>(this.readSaved());
-  readonly types: Record<string,string> = {book:'Книга',theme:'Тематическая линия',construct:'Понятие',thinker:'Автор',experiment:'Исследовательский эпизод',code:'Тематический код',proposition:'Тезис',chain_step:'Звено аргумента',trajectory_stage:'Стадия понятия',work:'Работа',citation:'Библиографическая запись'};
-  readonly filters = [{id:'all',label:'Обзор'},{id:'theme',label:'Темы'},{id:'construct',label:'Понятия'},{id:'thinker',label:'Авторы'},{id:'book',label:'Книги'}];
-  readonly titles: Record<View,string> = {map:'Карта смыслов',books:'Библиотека',saved:'Сохранённое'};
-  readonly nodes = computed(() => this.data()?.nodes ?? []);
-  readonly nodeMap = computed(() => new Map(this.nodes().map(n=>[n.id,n])));
-  readonly books = computed(() => this.data()?.books ?? []);
-  readonly bookMap = computed(() => new Map(this.books().map(b=>[b.id,b])));
-  readonly selected = computed(() => this.nodeMap().get(this.selectedId() ?? '') ?? null);
-  readonly themes = computed(() => this.nodes().filter(n=>n.type==='theme'));
-  readonly entryPoints = computed(() => {
-    const themes = this.themes();
-    const chosen: AtlasNode[] = [];
-    for (const term of ['мышлен','человек','социал','действ']) {
-      const found = themes.find(n=>this.normalize(n.label).includes(term) && !chosen.includes(n));
-      if (found) chosen.push(found);
+  readonly data=signal<Atlas|null>(null);
+  readonly loadError=signal(false);
+  readonly selectedId=signal<string|null>(null);
+  readonly focusId=signal<string|null>(null);
+  readonly zoomAction=signal<{kind:'in'|'out'|'fit';seq:number}|null>(null);
+  readonly indexOpen=signal(false);
+  readonly indexMode=signal<IndexMode>('all');
+  readonly aboutOpen=signal(false);
+  readonly journalOpen=signal(false);
+  readonly query=signal('');
+  readonly visibleLimit=signal(40);
+  readonly quoteLimit=signal(4);
+  readonly connectionLimit=signal(12);
+  readonly searchRefs=signal<Reference[]>([]);
+  readonly searchLoaded=signal(false);
+  readonly searchLoading=signal(false);
+  readonly searchError=signal(false);
+  readonly dossiers=signal<Dossiers|null>(null);
+  readonly dossierLoading=signal(false);
+  readonly dossierError=signal(false);
+  readonly shareState=signal('');
+  readonly shareFallback=signal('');
+  readonly saved=signal<string[]>(this.readSaved());
+  readonly types:Record<string,string>={book:'Книга',theme:'Тема',construct:'Понятие',thinker:'Автор',experiment:'Исследовательский эпизод',code:'Тематический код',proposition:'Тезис',chain_step:'Звено аргумента',trajectory_stage:'Стадия понятия',work:'Работа',citation:'Библиографическая запись'};
+  readonly nodes=computed(()=>this.data()?.nodes??[]);
+  readonly edges=computed(()=>this.data()?.edges??[]);
+  readonly nodeMap=computed(()=>new Map(this.nodes().map(n=>[n.id,n])));
+  readonly bookMap=computed(()=>new Map((this.data()?.books??[]).map(b=>[b.id,b])));
+  readonly selected=computed(()=>this.nodeMap().get(this.selectedId()??'')??null);
+  readonly selectedBook=computed(()=>this.bookMap().get(this.selectedId()??''));
+  readonly dossier=computed(()=>this.dossiers()?.nodes[this.selectedId()??'']??null);
+  readonly articleIntro=computed(()=>this.dossier()?.description||this.selected()?.description||'');
+  readonly articleSections=computed(()=>(this.dossier()?.sections??[]).filter(s=>s.text&&s.text!==this.articleIntro()));
+  readonly featured=computed(()=>this.nodes().find(n=>n.type==='theme'&&this.normalize(n.label).includes('системное мышление'))??this.nodes().find(n=>n.type==='theme'));
+  readonly quoteIndex=computed(()=>{
+    const index=new Map<string,Reference[]>();
+    for(const ref of this.searchRefs())for(const id of ref.nodeIds??[]){if(!index.has(id))index.set(id,[]);index.get(id)!.push(ref);}return index;
+  });
+  readonly selectedRefs=computed(()=>{
+    const node=this.selected();if(!node)return [];
+    const refs=this.searchLoaded()?this.quoteIndex().get(node.id)??[]:(node.refIds??[]).map(i=>this.data()?.references[i]).filter((r):r is Reference=>!!r);
+    return [...new Map(refs.map(ref=>[this.refKey(ref),ref])).values()];
+  });
+  readonly related=computed(()=>{
+    const id=this.selectedId();if(!id)return [];
+    const groups=new Map<string,{node:AtlasNode;analytical:boolean;literal:boolean;relations:Set<string>}>();
+    for(const edge of this.dossiers()?.edges??this.edges()){
+      if(edge.source!==id&&edge.target!==id)continue;
+      const other=this.nodeMap().get(edge.source===id?edge.target:edge.source);if(!other)continue;
+      if(!groups.has(other.id))groups.set(other.id,{node:other,analytical:false,literal:false,relations:new Set()});
+      const group=groups.get(other.id)!;if(edge.analytical)group.analytical=true;else group.literal=true;
+      if('relation' in edge&&edge.relation)group.relations.add((edge.source===id?'→ ':'← ')+String(edge.relation));
     }
-    return [...chosen,...themes.filter(n=>!chosen.includes(n))].slice(0,4);
+    return [...groups.values()].map(g=>({node:g.node,relation:[...g.relations].join(' · '),analytical:g.analytical&&!g.literal,evidence:g.analytical&&g.literal?'Текстовые и аналитические связи':g.analytical?'Аналитическая связь':'Текстовая отсылка'})).sort((a,b)=>b.node.degree-a.node.degree);
   });
-  readonly graphNodes = computed(() => {
-    const type = this.filter();
-    let candidates = type==='all' ? this.themes() : this.nodes().filter(n=>n.type===type);
-    if (!candidates.length) candidates=this.nodes().filter(n=>n.type==='book');
-    const chosen=candidates.filter((_,i)=> i % Math.max(1,Math.floor(candidates.length / 9))===0).slice(0,9);
-    const active=this.selected();
-    return active && !chosen.some(n=>n.id===active.id) ? [active,...chosen.slice(0,8)] : chosen;
+  readonly sourceBooks=computed(()=>(this.selected()?.books??[]).map(id=>this.bookMap().get(id)).filter((b):b is Book=>!!b));
+  readonly indexedNodes=computed(()=>{
+    const q=this.normalize(this.query().trim()),mode=this.indexMode();
+    return this.nodes().filter(n=>(mode!=='books'||n.type==='book')&&(mode!=='saved'||this.saved().includes(n.id))&&(!q||this.normalize(n.label+' '+n.description).includes(q))).sort((a,b)=>q?Number(this.normalize(b.label).includes(q))-Number(this.normalize(a.label).includes(q))||b.degree-a.degree:b.degree-a.degree);
   });
-  readonly selectedRefs = computed(() => {
-    const node=this.selected(); if (!node) return [];
-    const local=(node.refIds ?? []).map(i=>this.data()?.references[i]).filter((r):r is Reference=>!!r);
-    const extra=this.fullReferences().filter(r=>r.nodeIds?.includes(node.id));
-    return [...new Map([...local,...extra].map(r=>[r.book+'|'+r.locator+'|'+r.excerpt+'|'+r.author,r])).values()].slice(0,6);
-  });
-  readonly related = computed(() => {
-    const id=this.selectedId(); if (!id) return [];
-    const ids=new Set((this.data()?.edges ?? []).filter(e=>e.source===id || e.target===id).flatMap(e=>[e.source,e.target]));
-    ids.delete(id);
-    return [...ids].map(i=>this.nodeMap().get(i)).filter((n):n is AtlasNode=>!!n).sort((a,b)=>Number(b.type==='theme')-Number(a.type==='theme')).slice(0,6);
-  });
-  readonly filteredBooks = computed(() => {
-    const query=this.normalize(this.libraryQuery());
-    return this.books().filter(b=>(!query || this.normalize(b.title).includes(query)) && (this.period()==='all' || (this.period()==='recent' ? (b.year??0)>=2022 : (b.year??2026)<2022)));
-  });
-  readonly savedNodes = computed(() => this.saved().map(id=>this.nodeMap().get(id)).filter((n):n is AtlasNode=>!!n));
-  readonly searchNodes = computed(() => {
-    const q=this.normalize(this.query().trim()); if(q.length<2) return [];
-    return this.nodes().filter(n=>this.normalize(n.label+' '+n.description).includes(q)).sort((a,b)=>Number(this.normalize(b.label).includes(q))-Number(this.normalize(a.label).includes(q))).slice(0,18);
-  });
-  readonly searchRefs = computed(() => {
-    const q=this.normalize(this.query().trim()); if(q.length<2) return [];
-    return this.fullReferences().filter(r=>this.normalize(r.excerpt).includes(q)).slice(0,16);
-  });
-  @ViewChild('searchInput') searchInput?: ElementRef<HTMLInputElement>;
-  private searchReturnFocus: HTMLElement | null = null;
-  private aboutReturnFocus: HTMLElement | null = null;
-
-  constructor() { void this.load(); }
-
-  async load() {
-    this.loadError.set(false);
-    try {
-      const response=await fetch('explorer-data.json');
-      if(!response.ok) throw new Error('data');
-      this.data.set(await response.json());
-      this.applyHash();
-    } catch { this.loadError.set(true); }
+  readonly foundQuotes=computed(()=>{const q=this.normalize(this.query().trim());return q.length<2||this.indexMode()!=='all'?[]:this.searchRefs().filter(r=>this.normalize(r.excerpt).includes(q)).slice(0,20);});
+  readonly dialogOpen=computed(()=>this.indexOpen()||this.aboutOpen()||this.journalOpen());
+  @ViewChild('indexInput') indexInput?:ElementRef<HTMLInputElement>;
+  @ViewChild(NetworkComponent) network?:NetworkComponent;
+  private returnFocus:HTMLElement|null=null;
+  private actionSequence=0;
+  private sharedTimer?:ReturnType<typeof setTimeout>;
+  constructor(){void this.load();}
+  normalize(value:string){return value.toLocaleLowerCase('ru').replaceAll('ё','е');}
+  readSaved():string[]{try{const v=JSON.parse(localStorage.getItem('atlas-saved')||'[]');return Array.isArray(v)?v.filter(id=>typeof id==='string'):[];}catch{return [];}}
+  async load(){this.loadError.set(false);try{const r=await fetch('explorer-data.json');if(!r.ok)throw new Error();this.data.set(await r.json());this.applyHash();}catch{this.loadError.set(true);}}
+  async loadSearch(){
+    if(this.searchLoaded()||this.searchLoading())return;this.searchLoading.set(true);this.searchError.set(false);
+    try{const r=await fetch('explorer-search.json');if(!r.ok)throw new Error();this.searchRefs.set((await r.json()).references);this.searchLoaded.set(true);}catch{this.searchError.set(true);}finally{this.searchLoading.set(false);}
   }
-  normalize(value:string) { return value.toLocaleLowerCase('ru').replaceAll('ё','е'); }
-  readSaved():string[] { try {const value=JSON.parse(localStorage.getItem('atlas-saved') || '[]');return Array.isArray(value) ? value.filter(x=>typeof x==='string') : [];} catch {return [];} }
-  navigate(view:View) { this.view.set(view);this.menuOpen.set(false);this.selectedId.set(null);history.replaceState(null,'',location.pathname+location.search); }
-  select(id:string) {
-    if(!this.nodeMap().has(id)) return;
-    this.selectedId.set(id);this.view.set('map');this.menuOpen.set(false);this.closeSearch();
-    history.replaceState(null,'','#'+(this.nodeMap().get(id)?.type==='book'?'book=':'node=')+encodeURIComponent(id));
-    setTimeout(()=>{const title=document.getElementById('selected-title');title?.focus({preventScroll:true});title?.scrollIntoView({block:'nearest'});});
+  async loadDossiers(){
+    if(this.dossiers()||this.dossierLoading())return;this.dossierLoading.set(true);this.dossierError.set(false);
+    try{const r=await fetch('explorer-dossiers.json');if(!r.ok)throw new Error();this.dossiers.set(await r.json());}catch{this.dossierError.set(true);}finally{this.dossierLoading.set(false);}
   }
-  selectBook(book:Book) { this.select(book.id); }
-  @HostListener('window:hashchange') applyHash() {
-    const match=location.hash.match(/^#(?:book|node)=(.+)$/);
-    if(match) { try { const id=decodeURIComponent(match[1]);if(this.nodeMap().has(id)){this.selectedId.set(id);this.view.set('map');} } catch { /* Ignore malformed shared addresses. */ } }
+  openIndex(mode:IndexMode='all'){this.captureFocus();this.aboutOpen.set(false);this.journalOpen.set(false);this.indexMode.set(mode);this.query.set('');this.visibleLimit.set(40);this.indexOpen.set(true);setTimeout(()=>this.indexInput?.nativeElement.focus());void this.loadSearch();}
+  changeIndex(mode:IndexMode){this.indexMode.set(mode);this.visibleLimit.set(40);}
+  updateQuery(value:string){this.query.set(value);this.visibleLimit.set(40);}
+  more(kind:'nodes'|'quotes'|'connections'){if(kind==='nodes')this.visibleLimit.update(v=>v+40);else if(kind==='quotes')this.quoteLimit.update(v=>v+8);else this.connectionLimit.update(v=>v+12);}
+  openAbout(){this.captureFocus();this.indexOpen.set(false);this.journalOpen.set(false);this.aboutOpen.set(true);setTimeout(()=>document.getElementById('about-close')?.focus());}
+  select(id:string,push=true){
+    if(!this.nodeMap().has(id))return;this.captureFocus();this.selectedId.set(id);this.indexOpen.set(false);this.aboutOpen.set(false);this.journalOpen.set(true);this.quoteLimit.set(4);this.connectionLimit.set(12);this.shareState.set('');this.shareFallback.set('');
+    if(push&&location.hash!=='#node='+encodeURIComponent(id))history.pushState(null,'','#node='+encodeURIComponent(id));void this.loadDossiers();void this.loadSearch();
+    setTimeout(()=>{document.getElementById('journal-scroll')?.scrollTo({top:0});document.getElementById('journal-title')?.focus({preventScroll:true});});
   }
-  toggleSave(id:string) {
-    this.saved.update(ids=>ids.includes(id)?ids.filter(i=>i!==id):[...ids,id]);
-    try {localStorage.setItem('atlas-saved',JSON.stringify(this.saved()));} catch { /* Session state still works without storage. */ }
+  showOnMap(){this.journalOpen.set(false);this.indexOpen.set(false);const id=this.selectedId();if(id&&this.focusId()===id)this.network?.focusNode(id);else this.focusId.set(id);this.focusMap();}
+  mapAction(kind:'in'|'out'|'fit'){this.zoomAction.set({kind,seq:++this.actionSequence});if(kind==='fit'){this.selectedId.set(null);this.focusId.set(null);history.replaceState(null,'',location.pathname+location.search);}}
+  closeDialog(){this.indexOpen.set(false);this.aboutOpen.set(false);this.journalOpen.set(false);setTimeout(()=>{if(this.returnFocus?.isConnected)this.returnFocus.focus();else this.focusMap();});}
+  captureFocus(){if(!this.dialogOpen())this.returnFocus=document.activeElement as HTMLElement;}
+  focusMap(){setTimeout(()=>document.querySelector<HTMLElement>('app-network')?.focus());}
+  toggleSave(id:string){this.saved.update(ids=>ids.includes(id)?ids.filter(v=>v!==id):[...ids,id]);try{localStorage.setItem('atlas-saved',JSON.stringify(this.saved()));}catch{/* Collection remains available for this session. */}}
+  async copyLink(){const url=location.origin+location.pathname+'#node='+encodeURIComponent(this.selectedId()??'');try{await navigator.clipboard.writeText(url);this.shareState.set('Ссылка скопирована');clearTimeout(this.sharedTimer);this.sharedTimer=setTimeout(()=>this.shareState.set(''),3000);}catch{this.shareFallback.set(url);}}
+  scrollArticle(id:string){document.getElementById(id)?.scrollIntoView({block:'start'});}
+  @HostListener('window:hashchange') @HostListener('window:popstate') applyHash(){
+    const m=location.hash.match(/^#(?:node|book)=(.+)$/);let id='';try{id=m?decodeURIComponent(m[1]):'';}catch{/* Ignore malformed addresses. */}
+    if(this.nodeMap().has(id))this.select(id,false);else{this.selectedId.set(null);this.journalOpen.set(false);}
   }
-  setFilter(type:string) { this.filter.set(type); }
-  toggleMenu() {this.menuOpen.update(v=>!v);}
-  togglePause() {this.paused.update(v=>!v);}
-  changeZoom(delta:number) {this.zoom.update(z=>Math.min(1.5,Math.max(.65,z+delta)));}
-  resetMap() {this.zoom.set(1);this.filter.set('all');this.selectedId.set(null);history.replaceState(null,'',location.pathname+location.search);}
-  closeSelection() {this.selectedId.set(null);history.replaceState(null,'',location.pathname+location.search);}
-  async openSearch(query='') {
-    if(this.aboutOpen()) this.closeAbout();
-    if(!this.searchOpen()) this.searchReturnFocus=document.activeElement as HTMLElement;
-    this.searchOpen.set(true);this.query.set(query);this.menuOpen.set(false);
-    setTimeout(()=>this.searchInput?.nativeElement.focus());
-    await this.loadSearch();
-  }
-  closeSearch() {if(this.searchOpen()){this.searchOpen.set(false);this.searchReturnFocus?.focus();}}
-  async loadSearch() {
-    if(this.searchLoaded() || this.searchLoading()) return;
-    this.searchLoading.set(true);this.searchError.set(false);
-    try {
-      const response=await fetch('explorer-search.json');if(!response.ok) throw new Error('search');
-      const data=await response.json();this.fullReferences.set(data.references);this.searchLoaded.set(true);
-    } catch { this.searchError.set(true); } finally {this.searchLoading.set(false);}
-  }
-  openAbout() {this.closeSearch();this.aboutReturnFocus=document.activeElement as HTMLElement;this.aboutOpen.set(true);this.menuOpen.set(false);setTimeout(()=>document.getElementById('about-close')?.focus());}
-  closeAbout() {if(!this.aboutOpen()) return;this.aboutOpen.set(false);this.aboutReturnFocus?.focus();}
-  @HostListener('document:keydown',['$event']) keydown(event:KeyboardEvent) {
-    if((event.ctrlKey || event.metaKey) && event.key.toLowerCase()==='k'){event.preventDefault();void this.openSearch();}
-    if(event.key==='Escape'){if(this.searchOpen())this.closeSearch();else if(this.aboutOpen())this.closeAbout();this.menuOpen.set(false);}
-    if(event.key==='Tab' && (this.searchOpen() || this.aboutOpen())){
-      const dialog=document.getElementById(this.searchOpen()?'search-dialog':'about-dialog');
-      const focusable=dialog?.querySelectorAll<HTMLElement>('button,a[href],input,select,[tabindex="0"]');
-      if(focusable?.length){const first=focusable[0],last=focusable[focusable.length-1];if(event.shiftKey && document.activeElement===first){event.preventDefault();last.focus();}else if(!event.shiftKey && document.activeElement===last){event.preventDefault();first.focus();}}
+  @HostListener('document:keydown',['$event']) keydown(event:KeyboardEvent){
+    if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='k'){event.preventDefault();this.openIndex();}
+    if(event.key==='Escape'&&this.dialogOpen()){event.preventDefault();this.closeDialog();}
+    if(event.key==='Tab'&&this.dialogOpen()){
+      const id=this.indexOpen()?'index-dialog':this.aboutOpen()?'about-dialog':'journal-dialog';
+      const items=document.getElementById(id)?.querySelectorAll<HTMLElement>('button:not(:disabled),a[href],input,select,[tabindex="0"]');
+      if(items?.length){const first=items[0],last=items[items.length-1];if(event.shiftKey&&(document.activeElement===first||document.activeElement?.id==='journal-title')){event.preventDefault();last.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}}
     }
   }
-  bookTitle(id:string) {return this.bookMap().get(id)?.title ?? id;}
-  bookCount(node:AtlasNode) {return node.books?.length ?? 0;}
-  bookNumber(book:Book) {return Number(book.id.replace(/\D/g,''));}
-  countFor(book:Book) {return book.counts?.['total'] ?? 0;}
-  plural(value:number, forms:[string,string,string]) {const n=Math.abs(value)%100,k=n%10;return n>10 && n<20?forms[2]:k===1?forms[0]:k>=2 && k<=4?forms[1]:forms[2];}
-  bookLabel(value:number) {return this.plural(value,['книга','книги','книг']);}
-  connectionLabel(value:number) {return this.plural(value,['связь','связи','связей']);}
+  refKey(r:Reference){return r.book+'|'+r.locator+'|'+r.excerpt+'|'+(r.author??'');}
+  bookTitle(id:string){return this.bookMap().get(id)?.title??id;}
+  serial(n:AtlasNode){return String(this.nodes().findIndex(v=>v.id===n.id)+1).padStart(4,'0');}
+  plural(value:number,f:[string,string,string]){const n=Math.abs(value)%100,k=n%10;return n>10&&n<20?f[2]:k===1?f[0]:k>=2&&k<=4?f[1]:f[2];}
+  bookLabel(v:number){return this.plural(v,['книга','книги','книг']);}
+  connectionLabel(v:number){return this.plural(v,['связь','связи','связей']);}
 }

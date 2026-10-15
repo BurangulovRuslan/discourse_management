@@ -1,102 +1,83 @@
-<a class="skip-link" href="#main">К содержимому</a>
-<div class="app-shell">
-  @if (menuOpen()) { <button class="sidebar-scrim" aria-label="Закрыть меню" (click)="menuOpen.set(false)"></button> }
-  <aside class="sidebar" [class.is-open]="menuOpen()">
-    <a class="brand" href="./" aria-label="Атлас — главная"><span class="brand-symbol">✳</span><span>атлас<span class="brand-dot">.</span></span></a>
-    <div class="workspace"><span class="workspace-mark">К</span><span>Дискурс Курпатова<small>Исследовательское пространство</small></span><span class="status-dot"></span></div>
-    <div class="nav-caption">ПРОСТРАНСТВО</div>
-    <nav aria-label="Основная навигация">
-      <button [class.active]="view()==='map'" [attr.aria-current]="view()==='map'?'page':null" (click)="navigate('map')"><ui-icon name="map"/>Карта смыслов<span class="nav-mark">↗</span></button>
-      <button [class.active]="view()==='books'" [attr.aria-current]="view()==='books'?'page':null" (click)="navigate('books')"><ui-icon name="books"/>Библиотека<span class="nav-count">{{ books().length || '—' }}</span></button>
-      <button [class.active]="view()==='saved'" [attr.aria-current]="view()==='saved'?'page':null" (click)="navigate('saved')"><ui-icon name="bookmark"/>Сохранённое @if(saved().length){<span class="nav-count">{{saved().length}}</span>}</button>
-    </nav>
-    <div class="sidebar-rule"></div>
-    <button class="method-link" (click)="openAbout()"><ui-icon name="layers"/>Как устроен атлас<ui-icon name="diagonal"/></button>
-    <div class="sidebar-art" aria-hidden="true"><pre>      · : + : ·
-   : + ╱   ╲ + :
- · ─ ╳ ─ · ─ ╳ ─ ·
-   : + ╲   ╱ + :
-      · : + : ·</pre><span>МЫСЛИТЬ СВЯЗЯМИ</span></div>
-    <div class="sidebar-bottom">
-      <a class="legacy-switch" href="legacy.html"><ui-icon name="layers"/><span>Legacy-интерфейс<small>Полный набор инструментов</small></span><ui-icon name="diagonal"/></a>
-      <div class="sidebar-footer"><span><i class="status-dot"></i> Открытый корпус</span><a href="https://github.com/BurangulovRuslan/discourse_management" target="_blank" rel="noopener" aria-label="Проект на GitHub"><ui-icon name="github"/></a></div>
-    </div>
-  </aside>
-  <div class="main-shell">
-    <header class="topbar">
-      <button class="icon-button mobile-menu" aria-label="Открыть меню" [attr.aria-expanded]="menuOpen()" (click)="toggleMenu()"><ui-icon name="menu"/></button>
-      <div class="breadcrumb">Пространство <span>/</span><strong>{{ titles[view()] }}</strong></div>
-      <div class="topbar-actions"><span class="edition"><i class="status-dot"></i> EXPLORER 1.0</span><button class="search-trigger" aria-label="Поиск по атласу" (click)="openSearch()"><ui-icon name="search"/><span>Поиск по атласу</span><kbd>Ctrl K</kbd></button></div>
-    </header>
-    <main id="main" tabindex="-1">
-      @if(loadError()) {
-        <div class="state-panel"><ui-icon name="info"/><h1>Не удалось загрузить пространство</h1><p>Проверьте соединение и попробуйте ещё раз.</p><button class="primary-button" (click)="load()">Повторить загрузку</button><a href="legacy.html">Открыть Legacy</a></div>
-      } @else if(!data()) {
-        <div class="loading-state" role="status"><span class="loading-orbit">✳</span><p>Собираем пространство идей</p><span>Книги · понятия · связи</span></div>
-      } @else {
-        @if(view()==='map') {
-          <section class="page-intro">
-            <div><div class="eyebrow"><span class="tiny-cross">+</span> АТЛАС ДИСКУРСА АНДРЕЯ КУРПАТОВА</div><h1>Увидеть связи.<br><span>Найти смысл.</span></h1><p>От отдельной идеи — к целостной картине.<br>Исследуйте, как устроено мышление, через пространство книг и понятий.</p></div>
-            <div class="intro-stats"><div><strong>{{ books().length }}</strong><span>книг в корпусе</span></div><div><strong>{{ (data()?.stats?.['nodes'] ?? 0) | number:'1.0-0' }}</strong><span>узлов знания</span></div><div><strong>{{ (data()?.stats?.['edges'] ?? 0) | number:'1.0-0' }}</strong><span>связей между ними</span></div></div>
-          </section>
-          <section class="explorer-panel" aria-label="Интерактивная карта смыслов">
-            <div class="explorer-heading"><div class="panel-label"><i class="status-dot"></i> ЖИВАЯ КАРТА <span>/ 01</span></div><span class="map-hint">У каждой идеи есть продолжение</span><button class="icon-button" (click)="openAbout()" aria-label="О карте"><ui-icon name="info"/></button></div>
-            <div class="explorer-body">
-              <div class="map-stage">
-                <div class="map-filters" role="group" aria-label="Слой карты">@for(item of filters;track item.id){<button [class.active]="filter()===item.id" [attr.aria-pressed]="filter()===item.id" (click)="setFilter(item.id)">{{item.label}}</button>}</div>
-                <app-rhizome [nodes]="graphNodes()" [activeId]="selectedId()" [zoom]="zoom()" [paused]="paused()" (nodeSelect)="select($event)"/>
-                <div class="map-caption"><span class="coordinates">RHIZOME / {{ filter()==='all'?'OVERVIEW':filter().toUpperCase() }}</span><span>Связи вместо иерархий</span></div>
-                <div class="map-controls"><button aria-label="Увеличить карту" (click)="changeZoom(.1)" [disabled]="zoom()>=1.5"><ui-icon name="plus"/></button><button aria-label="Уменьшить карту" (click)="changeZoom(-.1)" [disabled]="zoom()<=.65"><ui-icon name="minus"/></button><span></span><button aria-label="Сбросить вид карты" (click)="resetMap()"><ui-icon name="reset"/></button><button [attr.aria-label]="paused()?'Включить движение':'Приостановить движение'" [attr.aria-pressed]="paused()" (click)="togglePause()"><ui-icon [name]="paused()?'play':'pause'"/></button></div>
-                <div class="map-bottom"><div class="map-legend"><i></i> Понятия <i></i> Книги <i></i> Авторы</div><span>{{graphNodes().length}} точек входа · художественный обзор</span></div>
-              </div>
-              <aside class="insight-panel" aria-label="Выбранный узел">
-                @if(selected();as node) {
-                  <div class="insight-top"><span class="eyebrow">{{types[node.type] || node.type}}</span><button class="icon-button" aria-label="Закрыть карточку" (click)="closeSelection()"><ui-icon name="close"/></button></div>
-                  <h2 id="selected-title" tabindex="-1">{{node.label}}</h2><div class="node-meta"><span>{{bookCount(node)}} {{bookLabel(bookCount(node))}}</span><span>{{related().length}} {{connectionLabel(related().length)}} в обзоре</span></div>
-                  @if(node.description){<p class="node-description">{{node.description}}</p>}
-                  <button class="save-button" [class.is-saved]="saved().includes(node.id)" (click)="toggleSave(node.id)"><ui-icon [name]="saved().includes(node.id)?'check':'bookmark'"/>{{saved().includes(node.id)?'Сохранено':'Сохранить идею'}}</button>
-                  @if(selectedRefs().length){<div class="detail-label">ЦИТАТНЫЕ ОПОРЫ</div>@for(ref of selectedRefs().slice(0,2);track ref.url+ref.excerpt+ref.author){<a class="quote-card" [href]="ref.url" target="_blank" rel="noopener">@if(ref.excerpt){<blockquote>«{{ref.excerpt.length>220?ref.excerpt.slice(0,220)+'…':ref.excerpt}}»</blockquote>}@if(ref.author){<p class="quote-attribution">Автор фрагмента: {{ref.author}}</p>}<span>{{bookTitle(ref.book)}}<small>{{ref.locator}} <ui-icon name="diagonal"/></small></span></a>}}
-                  @if(!selectedRefs().length){<p class="muted small">{{searchLoaded()?'Для этого узла отдельные цитатные опоры не размечены.':'Полный поиск может содержать дополнительные цитатные опоры.'}}</p>@if(!searchLoaded()){<button class="text-button" (click)="loadSearch()">{{searchLoading()?'Загружаем цитаты…':'Показать цитатные опоры'}}<ui-icon name="arrow"/></button>}@if(searchError()){<p class="muted small">Не удалось загрузить цитаты. Попробуйте ещё раз.</p>}}
-                  @if(related().length){<div class="detail-label">СВЯЗАННЫЕ ИДЕИ</div><div class="related-list">@for(item of related();track item.id){<button (click)="select(item.id)">{{item.label}}<ui-icon name="diagonal"/></button>}</div>}
-                } @else {
-                  <div class="insight-top"><span class="eyebrow">ВАШ МАРШРУТ</span><span class="step-number">01 — 03</span></div>
-                  <div class="insight-glyph" aria-hidden="true">✳</div><h2>Всё начинается<br>с вопроса.</h2><p>Выберите точку на карте или найдите то, что занимает вас сейчас.</p>
-                  <button class="primary-button" (click)="openSearch()">Исследовать атлас<ui-icon name="arrow"/></button>
-                  <div class="detail-label">ПОПРОБУЙТЕ НАЧАТЬ С ЭТОГО</div><div class="prompt-list">@for(term of ['Как устроено мышление','Человек и общество','Свобода и действие'];track term){<button (click)="openSearch(term==='Как устроено мышление'?'мышление':term==='Человек и общество'?'общество':'действие')">{{term}}<ui-icon name="diagonal"/></button>}</div>
-                  <div class="insight-note"><span>↳</span><p>Нелинейное пространство.<br>Уникальный путь исследования.</p></div>
-                }
-              </aside>
-            </div>
-            <details class="accessible-nodes"><summary>Узлы текущего обзора · доступный список</summary><div>@for(node of graphNodes();track node.id){<button (click)="select(node.id)">{{node.label}}</button>}</div></details>
-          </section>
-          <section class="entry-section"><div class="section-heading"><div><span class="eyebrow">НАВИГАЦИЯ ПО СМЫСЛАМ</span><h2>Точки входа</h2></div><button class="text-button" (click)="navigate('books')">Все книги<ui-icon name="arrow"/></button></div><div class="entry-grid">@for(node of entryPoints();track node.id;let i=$index){<button class="entry-card" (click)="select(node.id)"><div class="entry-card-top"><span>0{{i+1}} / ЛИНИЯ</span><ui-icon name="diagonal"/></div><span class="mini-rhizome" [class]="'mini-rhizome mini-'+i" aria-hidden="true">{{i===0?'⠿':i===1?'⌘':i===2?'⠶':'✳'}}</span><h3>{{node.label}}</h3><span class="entry-count">{{bookCount(node)}} {{bookLabel(bookCount(node))}} в контексте</span></button>}</div></section>
-        }
-        @if(view()==='books') {
-          <section class="page-intro library-intro"><div><div class="eyebrow"><span class="tiny-cross">+</span> ИСТОЧНИКИ ИДЕЙ</div><h1>Библиотека<span class="lime">.</span></h1><p>50 книг. Разные периоды. Одно пространство мысли.</p></div><div class="library-total"><strong>50</strong><span>книг / 2002—2026</span></div></section>
-          <div class="library-toolbar"><label class="inline-search"><ui-icon name="search"/><input type="search" aria-label="Найти книгу" placeholder="Название книги…" [value]="libraryQuery()" (input)="libraryQuery.set($any($event.target).value)"></label><label class="period-label">Период<select [value]="period()" (change)="period.set($any($event.target).value)"><option value="all">Все публикации</option><option value="recent">С 2022 года</option><option value="earlier">До 2022 года</option></select></label><span class="result-count" aria-live="polite">{{filteredBooks().length}} из {{books().length}}</span></div>
-          <div class="book-grid">@for(book of filteredBooks();track book.id){<button class="book-card" (click)="selectBook(book)"><div class="book-cover" [class]="'book-cover cover-'+(bookNumber(book)%5)"><span class="cover-author">АНДРЕЙ<br>КУРПАТОВ</span><div class="cover-art" aria-hidden="true"><span>✳</span><span>✳</span><span>✳</span></div><span class="cover-title">{{book.title}}</span><span class="cover-id">{{book.id}} / {{book.year || 'б. д.'}}</span></div><div class="book-info"><span>{{book.year || 'Без даты'}}</span><ui-icon name="diagonal"/><h2>{{book.title}}</h2><small>{{countFor(book)}} размеченных опор</small></div></button>}</div>
-          @if(!filteredBooks().length){<div class="state-panel"><h2>Книг с таким названием нет</h2><p>Попробуйте другое слово или выберите все публикации.</p><button class="secondary-button" (click)="libraryQuery.set('');period.set('all')">Сбросить фильтры</button></div>}
-        }
-        @if(view()==='saved') {
-          <section class="page-intro"><div><div class="eyebrow"><span class="tiny-cross">+</span> ВАША ТРАЕКТОРИЯ</div><h1>Сохранённое<span class="lime">.</span></h1><p>Идеи, к которым хочется вернуться. Хранятся в этом браузере.</p></div></section>
-          @if(!savedNodes().length){<div class="empty-saved"><span class="empty-glyph">⌘</span><h2>Начало вашей коллекции</h2><p>Откройте узел на карте и нажмите «Сохранить идею».<br>Он появится здесь вместе со своими источниками.</p><button class="primary-button" (click)="navigate('map')">Вернуться к исследованию<ui-icon name="arrow"/></button></div>} @else {<div class="saved-grid">@for(node of savedNodes();track node.id){<article class="saved-card"><span class="eyebrow">{{types[node.type]}}</span><h2><button (click)="select(node.id)">{{node.label}}<ui-icon name="diagonal"/></button></h2><p>{{node.description}}</p><div><span>{{bookCount(node)}} {{bookLabel(bookCount(node))}}</span><button class="icon-button" (click)="toggleSave(node.id)" [attr.aria-label]="'Удалить из сохранённого: '+node.label"><ui-icon name="close"/></button></div></article>}</div>}
-        }
-        <footer class="page-footer"><span class="footer-wordmark">атлас.</span><span>Пространство связанных идей</span><button (click)="openAbout()">О данных и методе<ui-icon name="diagonal"/></button></footer>
-      }
-    </main>
-  </div>
-</div>
-@if(searchOpen()) {
-  <div class="modal-backdrop" (click)="closeSearch()"><section id="search-dialog" class="search-dialog" role="dialog" aria-modal="true" aria-labelledby="search-title" (click)="$event.stopPropagation()"><div class="search-dialog-heading"><h2 id="search-title">Найти связь</h2><button class="icon-button" aria-label="Закрыть поиск" (click)="closeSearch()"><ui-icon name="close"/></button></div><label class="modal-search"><ui-icon name="search"/><input #searchInput type="search" placeholder="Понятие, книга или фрагмент цитаты…" aria-label="Поиск по понятиям и цитатам" [value]="query()" (input)="query.set($any($event.target).value)"><kbd>ESC</kbd></label><div class="search-results" aria-live="polite">
-    @if(query().trim().length<2){<div class="search-suggestions"><span class="eyebrow">НАЧНИТЕ С ИДЕИ</span>@for(term of ['Мышление','Реальность','Сознание','Отношения'];track term){<button (click)="query.set(term)">{{term}}<ui-icon name="diagonal"/></button>}<p>Поиск по {{nodes().length | number}} карточкам и {{data()?.stats?.['searchQuotes'] | number}} цитатам корпуса.</p></div>} @else {
-      @if(searchNodes().length){<div class="search-group-title">ПОНЯТИЯ И КНИГИ <span>{{searchNodes().length}}{{searchNodes().length===18?'+':''}}</span></div>@for(node of searchNodes();track node.id){<button class="search-result" (click)="select(node.id)"><span class="result-type">{{types[node.type] || 'Узел'}}</span><strong>{{node.label}}</strong><span class="result-description">{{node.description}}</span><ui-icon name="diagonal"/></button>}}
-      @if(searchLoading()){<p class="search-status" role="status">Подключаем полный поиск по цитатам…</p>}
-      @if(searchError()){<div class="search-status">Цитаты не загрузились. Поиск по карточкам доступен.<button class="text-button" (click)="loadSearch()">Повторить</button></div>}
-      @if(searchRefs().length){<div class="search-group-title">В ЦИТАТАХ <span>{{searchRefs().length}}{{searchRefs().length===16?'+':''}}</span></div>@for(ref of searchRefs();track ref.url+ref.excerpt+ref.author){<a class="search-quote" [href]="ref.url" target="_blank" rel="noopener"><blockquote>«{{ref.excerpt.length>320?ref.excerpt.slice(0,320)+'…':ref.excerpt}}»</blockquote>@if(ref.author){<p class="quote-attribution">Автор фрагмента: {{ref.author}}</p>}<span>{{bookTitle(ref.book)}} · {{ref.locator}}<ui-icon name="diagonal"/></span></a>}}
-      @if(!searchLoading() && !searchNodes().length && !searchRefs().length){<div class="state-panel"><h3>Совпадений пока нет</h3><p>Попробуйте одно ключевое слово, например «мышление».</p></div>}
+<a class="skip-link" href="#map">К карте</a>
+<div class="atlas-app" [attr.inert]="dialogOpen()?'':null">
+  <header class="masthead">
+    <a class="wordmark" href="./" aria-label="Атлас дискурса — главная"><span class="wordmark-sign" aria-hidden="true">✳</span><strong>атлас<span> / </span></strong><span class="wordmark-caption">ДИСКУРС<br>АНДРЕЯ КУРПАТОВА</span></a>
+    <nav aria-label="Навигация по атласу"><button (click)="openIndex()">Указатель<sup>{{nodes().length | number}}</sup></button><button (click)="openIndex('saved')" class="collection-link"><ui-icon name="bookmark"/><span>Коллекция</span><sup>{{saved().length}}</sup></button><button (click)="openAbout()" class="about-link">Об издании</button><a href="legacy.html" class="legacy-link">Legacy<ui-icon name="diagonal"/></a></nav>
+    <button class="header-search" aria-label="Поиск по атласу" (click)="openIndex()"><ui-icon name="search"/><kbd>Ctrl K</kbd></button>
+  </header>
+  <main id="map" class="map-workspace" tabindex="-1">
+    @if(loadError()){
+      <section class="load-state" role="alert"><span>×</span><h1>Карта не загрузилась</h1><p>Проверьте соединение и повторите попытку.</p><button class="solid-button" (click)="load()">Попробовать ещё раз<ui-icon name="arrow"/></button><a href="legacy.html">Открыть Legacy</a></section>
+    } @else if(!data()){
+      <section class="load-state" role="status"><span class="loading-sign">✳</span><h1>Собираем связи.</h1><p>50 книг. Одно пространство мысли.</p></section>
+    } @else {
+      <app-network class="network-surface" [nodes]="nodes()" [edges]="edges()" [activeId]="selectedId()" [focusId]="focusId()" [zoomAction]="zoomAction()" (nodeSelect)="select($event)"/>
+      <div class="map-intro"><div class="micro"><i></i> СВЯЗАННОЕ ИЗДАНИЕ / 001</div><h1>Атлас<br><em>дискурса.</em></h1><p>Мысль существует<br>между мыслями.</p><span class="intro-rule"></span><div class="intro-note">Книги, идеи и их пересечения.<br>Единая карта реальных связей.</div></div>
+      <div class="map-edition"><span>50 КНИГ</span><b>2002—2026</b><span>ОТКРЫТЫЙ КОРПУС</span></div>
+      <div class="map-guide"><span class="guide-cross" aria-hidden="true">+</span><p>Приближайте, перемещайтесь,<br>открывайте узлы как статьи.</p><button (click)="openIndex()">Найти свою точку входа<ui-icon name="diagonal"/></button></div>
+      @if(featured();as node){<button class="featured-article" (click)="select(node.id)"><span class="micro">ПЕРВЫЙ МАРШРУТ <span>↗</span></span><h2>{{node.label}}</h2><span class="featured-bottom">ЧИТАТЬ УЗЕЛ <span>{{node.degree}} {{connectionLabel(node.degree)}}</span></span></button>}
+      <div class="camera-controls" role="group" aria-label="Управление картой"><button aria-label="Увеличить карту" (click)="mapAction('in')"><ui-icon name="plus"/></button><button aria-label="Уменьшить карту" (click)="mapAction('out')"><ui-icon name="minus"/></button><span></span><button aria-label="Вместить всю карту" (click)="mapAction('fit')"><ui-icon name="reset"/></button></div>
+      <div class="map-axis" aria-hidden="true">СВЯЗИ / СМЫСЛЫ / ПЕРЕСЕЧЕНИЯ</div>
     }
-  </div><div class="search-dialog-footer"><span>От вопроса — к источнику</span><span>↵ Выберите результат</span></div></section></div>
+  </main>
+  <footer class="map-status"><span class="status-title"><i></i> ВСЯ СЕТЬ В ОДНОМ СЛОЕ</span><span>{{nodes().length | number}} УЗЛОВ <b> / </b> {{edges().length | number}} СВЯЗЕЙ</span><div class="edge-legend"><span><i></i>Текстовая отсылка</span><span><i></i>Аналитическая связь</span></div><span class="status-version">АТЛАС / 02</span></footer>
+</div>
+
+@if(indexOpen()){
+  <div class="dialog-backdrop" (click)="closeDialog()"><section id="index-dialog" class="index-dialog" role="dialog" aria-modal="true" aria-labelledby="index-title" (click)="$event.stopPropagation()">
+    <div class="dialog-topline"><span class="micro">НАВИГАЦИЯ ПО ИЗДАНИЮ</span><button class="icon-button" aria-label="Закрыть указатель" (click)="closeDialog()"><ui-icon name="close"/></button></div>
+    <h2 id="index-title">Указатель<span>.</span></h2>
+    <label class="index-search"><ui-icon name="search"/><input #indexInput type="search" aria-label="Поиск узлов и цитат" placeholder="Идея, книга, имя или фрагмент цитаты…" [value]="query()" (input)="updateQuery($any($event.target).value)"><kbd>ESC</kbd></label>
+    <div class="index-tabs" role="group" aria-label="Раздел указателя"><button [class.active]="indexMode()==='all'" [attr.aria-pressed]="indexMode()==='all'" (click)="changeIndex('all')">Все узлы <sup>{{nodes().length | number}}</sup></button><button [class.active]="indexMode()==='books'" [attr.aria-pressed]="indexMode()==='books'" (click)="changeIndex('books')">Книги <sup>50</sup></button><button [class.active]="indexMode()==='saved'" [attr.aria-pressed]="indexMode()==='saved'" (click)="changeIndex('saved')">Коллекция <sup>{{saved().length}}</sup></button></div>
+    <div class="index-scroll"><div class="index-count micro" aria-live="polite">{{indexedNodes().length | number}} {{plural(indexedNodes().length,['материал','материала','материалов'])}}</div>
+      @for(node of indexedNodes().slice(0,visibleLimit());track node.id){<button class="index-item" (click)="select(node.id)"><span class="index-item-number">{{serial(node)}}</span><span class="index-item-content"><span class="micro">{{types[node.type]}}</span><strong>{{node.label}}</strong><small>{{node.degree}} {{connectionLabel(node.degree)}} <span> / </span> {{node.books.length}} {{bookLabel(node.books.length)}}</small></span><ui-icon name="diagonal"/></button>}
+      @if(indexedNodes().length>visibleLimit()){<button class="load-more" (click)="more('nodes')">Ещё 40 материалов<ui-icon name="plus"/></button>}
+      @if(!indexedNodes().length){<div class="empty-state"><h3>{{indexMode()==='saved'&&!query()?'Ваша коллекция начинается здесь.':'Совпадений нет.'}}</h3><p>{{indexMode()==='saved'&&!query()?'Откройте любой узел и сохраните его в коллекцию.':'Попробуйте короткую основу слова, например «мышл».'}}</p></div>}
+      @if(query().trim().length>1&&indexMode()==='all'){
+        @if(searchLoading()){<p class="index-message" role="status">Подключаем поиск по цитатам…</p>}
+        @if(searchError()){<p class="index-message">Цитаты не загрузились. <button (click)="loadSearch()">Повторить</button></p>}
+        @if(foundQuotes().length){<div class="index-count micro">В ЦИТАТАХ / {{foundQuotes().length}}{{foundQuotes().length===20?'+':''}}</div>@for(ref of foundQuotes();track refKey(ref)){<a class="index-quote" [href]="ref.url" target="_blank" rel="noopener"><blockquote>«{{ref.excerpt.length>340?ref.excerpt.slice(0,340)+'…':ref.excerpt}}»</blockquote>@if(ref.author){<span class="quote-voice">Автор фрагмента: {{ref.author}}</span>}<span class="micro">{{bookTitle(ref.book)}} · {{ref.locator}}<ui-icon name="diagonal"/></span></a>}}
+      }
+    </div><div class="index-footnote">Каждый узел — отдельная история. Все истории связаны.</div>
+  </section></div>
 }
-@if(aboutOpen()) {
-  <div class="modal-backdrop" (click)="closeAbout()"><section id="about-dialog" class="about-dialog" role="dialog" aria-modal="true" aria-labelledby="about-title" (click)="$event.stopPropagation()"><div class="search-dialog-heading"><span class="eyebrow">УСТРОЙСТВО ПРОСТРАНСТВА</span><button id="about-close" class="icon-button" aria-label="Закрыть описание" (click)="closeAbout()"><ui-icon name="close"/></button></div><span class="about-glyph" aria-hidden="true">✳</span><h2 id="about-title">Знание растёт<br>через связи.</h2><p>Атлас объединяет 50 книг Андрея Курпатова: темы, понятия, авторов и исследовательские эпизоды. Выберите идею, исследуйте её окружение и вернитесь к исходному фрагменту.</p><div class="about-row"><span>01</span><div><h3>Ризома как навигация</h3><p>Живая структура — художественный обзор точек входа. Её декоративные линии не изображают точную топологию корпуса. Реальные соседние узлы показаны в карточке.</p></div></div><div class="about-row"><span>02</span><div><h3>От идеи — к свидетельству</h3><p>Каждая цитатная опора ведёт к странице или абзацу конкретного издания. Наличие связи в разметке само по себе не доказывает причинность.</p></div></div><div class="about-row"><span>03</span><div><h3>Глубина по запросу</h3><p>Сравнение книг, цепочки аргументации, эволюция понятий и полный граф доступны в Legacy. Сохранены все исходные данные и ограничения интерпретации.</p></div></div><a class="primary-button" href="legacy.html">Открыть Legacy<ui-icon name="diagonal"/></a></section></div>
+
+@if(journalOpen()&&selected();as node){
+  <div class="journal-backdrop" (click)="closeDialog()"><article id="journal-dialog" class="journal-dialog" role="dialog" aria-modal="true" aria-labelledby="journal-title" (click)="$event.stopPropagation()">
+    <header class="journal-toolbar"><span class="journal-brand">атлас / <span>МАТЕРИАЛ {{serial(node)}}</span></span><div><button (click)="showOnMap()"><ui-icon name="map"/><span>На карте</span></button><button [attr.aria-label]="saved().includes(node.id)?'Удалить из коллекции':'Сохранить в коллекцию'" [attr.aria-pressed]="saved().includes(node.id)" (click)="toggleSave(node.id)"><ui-icon [name]="saved().includes(node.id)?'check':'bookmark'"/><span>{{saved().includes(node.id)?'Сохранено':'Сохранить'}}</span></button><button aria-label="Закрыть материал" (click)="closeDialog()"><ui-icon name="close"/></button></div></header>
+    <div id="journal-scroll" class="journal-scroll">
+      <section class="journal-cover">
+        <div class="cover-editorial"><span class="micro">{{types[node.type]}} <span> / </span> {{node.id}}</span><h1 id="journal-title" tabindex="-1">{{node.label}}</h1><div class="cover-editorial-rule"></div><div class="cover-statistics"><div><b>{{node.degree | number}}</b><span>{{connectionLabel(node.degree)}}</span></div><div><b>{{node.books.length}}</b><span>{{bookLabel(node.books.length)}} в контексте</span></div>@if(selectedBook();as book){<div><b>{{book.year || '—'}}</b><span>год издания</span></div>}</div><span class="cover-issue">СВЯЗАННОЕ ИЗДАНИЕ <span>№ {{serial(node)}}</span></span></div>
+        <div class="cover-image"><app-node-cover [node]="node" [nodes]="nodes()" [edges]="edges()"/><span class="image-caption">ЛОКАЛЬНАЯ ТОПОЛОГИЯ <span>↗ {{related().length}} СОСЕДНИХ УЗЛОВ</span></span></div>
+      </section>
+      <nav class="journal-contents" aria-label="Разделы материала"><span class="micro">В ЭТОМ МАТЕРИАЛЕ</span><button (click)="scrollArticle('article-context')">01 / Контекст</button><button (click)="scrollArticle('article-evidence')">02 / Цитаты</button><button (click)="scrollArticle('article-connections')">03 / Связи</button></nav>
+      <div class="article-body">
+        <section id="article-context" class="article-context"><div class="section-kicker"><span>01</span><h2>Контекст</h2></div>
+          @if(dossierLoading()){<p class="article-loading" role="status">Открываем полную версию материала…</p>}
+          @if(dossierError()){<p class="article-loading">Не удалось загрузить полный материал. <button (click)="loadDossiers()">Повторить</button></p>}
+          @if(articleIntro()){<p class="article-lead">{{articleIntro()}}</p>}
+          @for(section of articleSections();track $index){<div class="article-section"><h3>{{section.label}}</h3><p>{{section.text}}</p></div>}
+          @if(!articleIntro()&&!articleSections().length&&!dossierLoading()){<p class="article-lead">Этот узел раскрывается через цитаты и связи с другими материалами корпуса.</p>}
+          @if(sourceBooks().length){<div class="source-books"><span class="micro">КНИГИ В КОНТЕКСТЕ</span><div>@for(book of sourceBooks();track book.id){<button (click)="select(book.id)">{{book.title}}<small>{{book.year || 'б. д.'}}</small><ui-icon name="diagonal"/></button>}</div></div>}
+        </section>
+        <section id="article-evidence" class="article-evidence"><div class="section-kicker"><span>02</span><h2>Голос источника</h2><span class="section-total">{{selectedRefs().length}}{{!searchLoaded()?'+':''}} ОПОР</span></div>
+          @if(searchLoading()){<p class="article-loading" role="status">Загружаем все цитатные опоры…</p>}
+          @if(searchError()){<p class="article-loading">Полный индекс цитат не загрузился. <button (click)="loadSearch()">Повторить</button></p>}
+          <div class="evidence-grid">@for(ref of selectedRefs().slice(0,quoteLimit());track refKey(ref);let i=$index){<figure class="evidence-card"><span class="micro">ФРАГМЕНТ / {{(i+1).toString().padStart(2,'0')}}</span><blockquote>«{{ref.excerpt}}»</blockquote>@if(ref.author){<p class="quote-voice">Автор фрагмента: {{ref.author}}</p>}@if(ref.note){<p class="quote-note">{{ref.note}}</p>}<figcaption><a [href]="ref.url" target="_blank" rel="noopener">{{bookTitle(ref.book)}}<span>{{ref.locator}}<ui-icon name="diagonal"/></span></a></figcaption></figure>}</div>
+          @if(selectedRefs().length>quoteLimit()){<button class="article-more" (click)="more('quotes')">Ещё цитатные опоры <span>{{selectedRefs().length-quoteLimit()}} осталось</span><ui-icon name="plus"/></button>}
+          @if(!selectedRefs().length&&searchLoaded()){<p class="article-empty">Для этого узла отдельные цитатные фрагменты не размечены. Его контекст можно проследить по соседним материалам.</p>}
+        </section>
+        <section id="article-connections" class="article-connections"><div class="section-kicker"><span>03</span><h2>Продолжение мысли</h2><span class="section-total">{{related().length}} МАТЕРИАЛОВ</span></div><p class="connections-intro">Реальные соседние узлы. Выберите связь, чтобы продолжить чтение.</p>
+          <div class="connection-gallery">@for(row of related().slice(0,connectionLimit());track row.node.id;let i=$index){<button class="connection-cover" [class]="'connection-cover cover-tone-'+(i%3)" (click)="select(row.node.id)"><span class="micro">{{types[row.node.type]}}<ui-icon name="diagonal"/></span><span class="connection-decoration" aria-hidden="true">{{(i+1).toString().padStart(2,'0')}}</span><h3>{{row.node.label}}</h3>@if(row.relation){<p>{{row.relation}}</p>}<span class="connection-evidence"><i [class.dashed]="row.analytical"></i>{{row.evidence}}</span></button>}</div>
+          @if(related().length>connectionLimit()){<button class="article-more" (click)="more('connections')">Продолжить галерею <span>{{related().length-connectionLimit()}} осталось</span><ui-icon name="plus"/></button>}
+          @if(!related().length){<p class="article-empty">У этого узла пока нет размеченных связей.</p>}
+        </section>
+        <footer class="journal-footer"><div><span class="micro">МЫСЛЬ НЕ ЗАКАНЧИВАЕТСЯ НА СТРАНИЦЕ</span><h2>Вернуться<br><em>к связям.</em></h2></div><button class="solid-button" (click)="showOnMap()">Показать узел на карте<ui-icon name="diagonal"/></button><div class="journal-share"><button (click)="copyLink()">{{shareState() || 'Скопировать ссылку на материал'}}<ui-icon name="arrow"/></button>@if(shareFallback()){<input aria-label="Ссылка на материал" [value]="shareFallback()" readonly (focus)="$any($event.target).select()">}</div></footer>
+      </div>
+    </div>
+  </article></div>
+}
+
+@if(aboutOpen()){
+  <div class="dialog-backdrop" (click)="closeDialog()"><section id="about-dialog" class="about-dialog" role="dialog" aria-modal="true" aria-labelledby="about-title" (click)="$event.stopPropagation()"><div class="dialog-topline"><span class="micro">О СВЯЗАННОМ ИЗДАНИИ</span><button id="about-close" class="icon-button" aria-label="Закрыть описание" (click)="closeDialog()"><ui-icon name="close"/></button></div><span class="about-symbol" aria-hidden="true">✳</span><h2 id="about-title">Читать<br><em>между узлами.</em></h2><p class="about-lead">50 книг Андрея Курпатова. {{nodes().length | number}} узлов. {{edges().length | number}} связей. Вся сеть находится на одной карте.</p><div class="about-section"><span>01</span><div><h3>Карта — это данные</h3><p>Все точки и линии соответствуют узлам и связям корпуса. Положение рассчитано по структуре графа. Приближение раскрывает подписи, сохраняя единую сеть.</p></div></div><div class="about-section"><span>02</span><div><h3>Узел — это материал</h3><p>Откройте точку или найдите её в указателе. Внутри — полный контекст, цитаты из книг и галерея соседних материалов. Читайте, сохраняйте и продолжайте путь по связям.</p></div></div><div class="about-section"><span>03</span><div><h3>Связь требует прочтения</h3><p>Сплошная линия — описание или отсылка в тексте; пунктирная — аналитическая реконструкция. Связь сама по себе не доказывает причинность. Источники сохраняют авторский голос и адрес фрагмента.</p></div></div><a class="solid-button" href="legacy.html">Полные инструменты Legacy<ui-icon name="diagonal"/></a><a class="reference-credit" href="https://www.behance.net/gallery/106310813/CCRU-Trilogy" target="_blank" rel="noopener">Визуальный ориентир — CCRU Trilogy / Alberto Bertelli<ui-icon name="diagonal"/></a></section></div>
 }
