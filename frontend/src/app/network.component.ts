@@ -5,6 +5,8 @@ import {
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { paintCover } from './cover-art';
+import { getNeighborhoodLayout, NeighborhoodCard, NeighborhoodLayout } from './neighborhood-layout';
+export { NEIGHBORHOOD_PAGE_SIZE, NEIGHBORHOOD_MOBILE_PAGE_SIZE } from './neighborhood-layout';
 
 export interface NetworkNode { id: string; type: string; label: string; x: number; y: number; z?: number; degree: number; }
 export interface NetworkEdge { source: string; target: string; analytical: boolean; }
@@ -107,7 +109,7 @@ const PARTICLE_FRAGMENT = `
   selector: 'app-network', standalone: true, changeDetection: ChangeDetectionStrategy.OnPush,
   host: {
     tabindex: '0', role: 'region',
-    'aria-label': 'Трёхмерная ризома. Мышь вращает, правая кнопка или Shift перемещает, колесо приближает. Стрелки перемещают, A D W S вращают, плюс и минус меняют масштаб, ноль показывает всю сеть. Tab — видимые обложки, Enter — открыть. Поиск всех материалов: Ctrl K.',
+    'aria-label': 'Трёхмерная ризома. Мышь вращает, правая кнопка или Shift перемещает, колесо приближает. Стрелки перемещают, A D W S вращают, плюс и минус меняют масштаб, ноль показывает всю сеть. Tab — видимые обложки, Enter — выбрать узел и перейти к связям. Поиск всех материалов: Ctrl K.',
     '(keydown)': 'onKeydown($event)',
   },
   template: `
@@ -139,9 +141,11 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
   @Input() activeId: string | null = null;
   @Input() focusId: string | null = null;
   @Input() motionPaused = false;
+  @Input() neighborhoodPage = 0;
   @Input() zoomAction: {kind:'in'|'out'|'fit';seq:number}|null = null;
   @Output() nodeSelect = new EventEmitter<string>();
   @Output() viewportChange = new EventEmitter<{zoom:number}>();
+  @Output() neighborhoodChange = new EventEmitter<Omit<NeighborhoodLayout,'cards'>>();
   @HostBinding('attr.data-node-count') get nodeCount(){return this.nodes.length;}
   @HostBinding('attr.data-edge-count') get edgeCount(){return this.edges.length;}
   @HostBinding('attr.data-cover-count') get coverCount(){return this.nodes.length;}
@@ -153,6 +157,11 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
   @HostBinding('attr.data-camera-distance') cameraDistance=0;
   @HostBinding('attr.data-motion') motionState='running';
   @HostBinding('attr.data-atlas-ready') atlasReady=false;
+  @HostBinding('attr.data-neighborhood-id') get neighborhoodId(){return this.neighborhood?.id??null;}
+  @HostBinding('attr.data-neighborhood-page') get neighborhoodCurrentPage(){return this.neighborhood?.page??null;}
+  @HostBinding('attr.data-neighborhood-page-size') get neighborhoodPageSize(){return this.neighborhood?.pageSize??null;}
+  @HostBinding('attr.data-neighborhood-total') get neighborhoodTotal(){return this.neighborhood?.total??null;}
+  @HostBinding('attr.data-neighborhood-neighbor-ids') get neighborhoodIds(){return this.neighborhood?JSON.stringify(this.neighborhood.neighborIds):null;}
   @ViewChild('surface',{static:true}) private surface!:ElementRef<HTMLCanvasElement>;
   accessibleCovers:AccessibleCover[]=[];
   status=''; renderError=false;
@@ -184,6 +193,12 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
   private pointerIds=new Set<number>();private multiPointer=false;
   private lastZoom=-1;private temp=new THREE.Vector3();private viewTemp=new THREE.Vector3();private ndc=new THREE.Vector3();
   private inverseView=new THREE.Matrix4();private right=new THREE.Vector3();private up=new THREE.Vector3();
+  private neighborhood:NeighborhoodLayout|null=null;
+  private neighborhoodTethers:THREE.LineSegments|null=null;
+  private overlayTargets=new Map<string,{position:THREE.Vector3;scale:THREE.Vector3}>();
+  private forward=new THREE.Vector3();
+  private highlightSignature='';
+  private calloutFrom=new Map<string,NeighborhoodCard>();private calloutTransitionStart=0;
 
   constructor(private zone:NgZone,private cdr:ChangeDetectorRef){}
 
@@ -226,8 +241,12 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
   ngOnChanges(changes:SimpleChanges):void{
     if(!this.initialized)return;
     if(changes['nodes']||changes['edges'])this.rebuildGraph();
-    if(changes['activeId'])this.updateHighlight();
+    if(changes['activeId']){
+      if(!this.activeId&&this.neighborhood)this.clearNeighborhood();
+      this.updateHighlight();
+    }
     if(changes['focusId']&&this.focusId)this.focusNode(this.focusId);
+    else if(changes['neighborhoodPage']&&this.neighborhood)this.setNeighborhood(this.neighborhood.id,this.neighborhoodPage,false);
     if(changes['zoomAction']&&this.zoomAction){
       if(this.zoomAction.kind==='fit')this.fit();else this.zoom(this.zoomAction.kind==='in'?1/1.35:1.35);
     }
@@ -251,15 +270,53 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
 
   /** A genuine 3D neighborhood; the article selection does not choose the entry point. */
   readMap():void{
+    this.clearNeighborhood();
     const anchor=this.readingAnchor();if(anchor!==undefined)this.flyTo(this.positions[anchor],this.readingDistance());
-    this.setHovered(null);this.status='Область чтения. Вращайте пространство и открывайте обложки.';
+    this.setHovered(null);this.status='Область чтения. Вращайте пространство и выбирайте обложки, чтобы перейти к связям.';
   }
 
   focusNode(id:string):void{
-    const index=this.indices.get(id);if(index===undefined||!this.controls)return;
-    this.flyTo(this.positions[index],this.readingDistance());
-    this.setHovered(null);this.updateHighlight(id);
-    const node=this.nodes[index];this.status=`${node.label}. Связей: ${node.degree}. Enter — открыть материал.`;
+    this.focusNeighborhood(id,this.neighborhoodPage);
+  }
+
+  focusNeighborhood(id:string,page=0):void{
+    this.setNeighborhood(id,page,true);
+  }
+
+  private setNeighborhood(id:string,page:number,fly:boolean):void{
+    const index=this.indices.get(id);if(index===undefined||!this.controls||!this.width||!this.height)return;
+    this.calloutFrom=new Map(this.foreground.map(p=>[p.id,{id:p.id,selected:p.id===this.neighborhood?.id,x:p.x,y:p.y,w:p.w,h:p.h}]));
+    this.calloutTransitionStart=performance.now();
+    this.neighborhood=getNeighborhoodLayout(this.nodes,this.edges,id,page,{width:this.width,height:this.height});
+    this.hoveredId=null;this.keyboardId=null;this.lastProjection=0;this.highlightSignature='';
+    this.buildNeighborhoodTethers();this.updateHighlight(id);
+    if(fly){
+      this.camera.updateMatrixWorld();
+      const selected=this.neighborhood.cards[0],focal=this.height/(2*Math.tan(THREE.MathUtils.degToRad(this.camera.fov/2)));
+      const distance=Math.max(500,focal*COVER_H/Math.max(140,selected.h));
+      this.right.setFromMatrixColumn(this.camera.matrixWorld,0);this.up.setFromMatrixColumn(this.camera.matrixWorld,1);
+      const framing=this.positions[index].clone().addScaledVector(this.right,-(selected.x-this.width/2)*distance/focal)
+        .addScaledVector(this.up,-(this.height/2-selected.y)*distance/focal);
+      this.flyTo(framing,distance,980);
+    }
+    const {cards,...state}=this.neighborhood;
+    this.zone.run(()=>{this.neighborhoodChange.emit(state);this.cdr.markForCheck();});
+    const node=this.nodes[index];this.status=`${node.label}. Связанных материалов: ${state.total}. Выносные обложки привязаны к реальным узлам тонкими линиями.`;
+    this.requestDraw();
+  }
+
+  private clearNeighborhood():void{
+    this.neighborhood=null;this.overlayTargets.clear();this.calloutFrom.clear();this.highlightSignature='';
+    if(this.neighborhoodTethers){this.graph.remove(this.neighborhoodTethers);this.neighborhoodTethers.geometry.dispose();(this.neighborhoodTethers.material as THREE.Material).dispose();this.neighborhoodTethers=null;}
+    this.lastProjection=0;
+  }
+
+  private buildNeighborhoodTethers():void{
+    if(this.neighborhoodTethers){this.graph.remove(this.neighborhoodTethers);this.neighborhoodTethers.geometry.dispose();(this.neighborhoodTethers.material as THREE.Material).dispose();}
+    if(!this.neighborhood){this.neighborhoodTethers=null;return;}
+    const geometry=new THREE.BufferGeometry();geometry.setAttribute('position',new THREE.BufferAttribute(new Float32Array(this.neighborhood.cards.length*6),3));
+    const material=new THREE.LineDashedMaterial({color:0xa2b4bd,transparent:true,opacity:.28,dashSize:10,gapSize:9,depthTest:false,depthWrite:false});
+    this.neighborhoodTethers=new THREE.LineSegments(geometry,material);this.neighborhoodTethers.frustumCulled=false;this.neighborhoodTethers.renderOrder=2;this.graph.add(this.neighborhoodTethers);
   }
 
   onKeydown(event:KeyboardEvent):void{
@@ -309,7 +366,7 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
     this.buildCurves();this.buildAtlas();this.buildNodeMesh();this.buildSourceFrame();
     this.baseLines=this.createLines(this.curves,false);this.graph.add(this.baseLines);
     const ambientCurves=this.curves.filter((_,i)=>i%37===0);this.graph.add(this.createParticles(ambientCurves,false));
-    this.updateHighlight();
+    if(this.neighborhood)this.setNeighborhood(this.neighborhood.id,this.neighborhood.page,false);else this.updateHighlight();
     if(!this.started&&this.width&&this.height)this.startView();
     this.lastProjection=0;this.requestDraw();
   }
@@ -324,7 +381,7 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
       if(renderable.material){for(const mat of Array.isArray(renderable.material)?renderable.material:[renderable.material])mat.dispose();}
     });
     this.scene.remove(this.graph);this.atlas?.dispose();this.atlas=null;this.sourceFrameTexture?.dispose();this.sourceFrameTexture=null;this.sourceFrame=null;
-    this.highlight=null;this.baseLines=null;this.activeParticles=null;this.highlightId=null;
+    this.highlight=null;this.baseLines=null;this.activeParticles=null;this.highlightId=null;this.highlightSignature='';this.neighborhoodTethers=null;
   }
 
   private buildCurves():void{
@@ -431,7 +488,12 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
   }
 
   private updateHighlight(forceId?:string):void{
-    const id=forceId??this.hoveredId??this.activeId;if(this.highlightId===id&&this.highlight)return;
+    const pageIds=new Set(this.neighborhood?.neighborIds??[]);
+    const contextId=this.neighborhood?.id;
+    const hoverSource=this.hoveredId&&this.hoveredId!==contextId&&!pageIds.has(this.hoveredId)?this.hoveredId:null;
+    const id=forceId??hoverSource??contextId??this.hoveredId??this.activeId;
+    const signature=`${id??''}|${contextId??''}|${this.neighborhood?.page??0}|${this.hoveredId??''}`;
+    if(this.highlightSignature===signature)return;this.highlightSignature=signature;
     this.highlightId=id;
     this.updateBaseOpacity();
     for(const object of [this.highlight,this.activeParticles])if(object){this.graph.remove(object);object.geometry.dispose();(object.material as THREE.Material).dispose();}
@@ -439,13 +501,20 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
     if(this.nodeHeat&&this.pointHeat){
       (this.nodeHeat.array as Float32Array).fill(0);(this.pointHeat.array as Float32Array).fill(0);
       if(id){
-        for(const neighbor of this.adjacency.get(id)??[]){const i=this.indices.get(neighbor)!;this.nodeHeat.setX(i,1);this.pointHeat.setX(i,1);}
+        for(const neighbor of this.adjacency.get(id)??[]){
+          if(id===contextId&&!pageIds.has(neighbor))continue;
+          const i=this.indices.get(neighbor)!;this.nodeHeat.setX(i,1);this.pointHeat.setX(i,1);
+        }
         const index=this.indices.get(id);if(index!==undefined){this.nodeHeat.setX(index,2);this.pointHeat.setX(index,2);}
+        if(this.hoveredId){const hover=this.indices.get(this.hoveredId);if(hover!==undefined){this.nodeHeat.setX(hover,2);this.pointHeat.setX(hover,2);}}
       }
       this.nodeHeat.needsUpdate=true;this.pointHeat.needsUpdate=true;
     }
     const index=id?this.indices.get(id):undefined;
-    if(index!==undefined){const curves=this.curves.filter(c=>c.source===index||c.target===index);
+    if(index!==undefined){const curves=this.curves.filter(c=>{
+        if(c.source!==index&&c.target!==index)return false;
+        return id!==contextId||pageIds.has(this.nodes[c.source===index?c.target:c.source].id);
+      });
       this.highlight=this.createLines(curves,true);this.activeParticles=this.createParticles(curves,true);this.graph.add(this.highlight,this.activeParticles);}
     this.lastProjection=0;this.requestDraw();
   }
@@ -458,7 +527,9 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
     this.graph.traverse(object=>{const material=(object as THREE.Mesh).material as THREE.ShaderMaterial|undefined;
       if(material?.uniforms?.['uHeight'])material.uniforms['uHeight'].value=this.height;
       if(material?.uniforms?.['uDpr'])material.uniforms['uDpr'].value=this.dpr;});
-    if(!this.started&&this.nodes.length)this.startView();this.lastProjection=0;this.requestDraw();
+    if(!this.started&&this.nodes.length)this.startView();
+    else if(this.neighborhood)this.setNeighborhood(this.neighborhood.id,this.neighborhood.page,false);
+    this.lastProjection=0;this.requestDraw();
   }
 
   private readingAnchor():number|undefined{
@@ -473,16 +544,18 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
     const target=index===undefined?this.center:this.positions[index];
     this.controls.target.copy(target);this.camera.position.copy(target).add(new THREE.Vector3(.52,.3,1).normalize().multiplyScalar(this.readingDistance()));
     this.controls.update();this.lastProjection=0;
+    if(this.focusId)this.setNeighborhood(this.focusId,this.neighborhoodPage,true);
   }
-  private flyTo(target:THREE.Vector3,distance:number):void{
+  private flyTo(target:THREE.Vector3,distance:number,duration=780):void{
     if(!this.controls)return;
     const direction=this.camera.position.clone().sub(this.controls.target).normalize();if(direction.lengthSq()<.1)direction.set(.5,.3,1).normalize();
     const toEye=target.clone().addScaledVector(direction,distance);
     if(this.reduced){this.controls.target.copy(target);this.camera.position.copy(toEye);this.controls.update();this.flight=null;}
-    else this.flight={fromEye:this.camera.position.clone(),toEye,fromTarget:this.controls.target.clone(),toTarget:target.clone(),started:performance.now(),duration:780};
+    else this.flight={fromEye:this.camera.position.clone(),toEye,fromTarget:this.controls.target.clone(),toTarget:target.clone(),started:performance.now(),duration};
     this.requestDraw();
   }
   private fit():void{
+    this.clearNeighborhood();
     const aspect=Math.max(.35,Math.min(1,this.camera.aspect));this.flyTo(this.center,this.fitDistance/aspect);
     this.setHovered(null);this.status='Вся сеть. 4698 реальных узлов в едином трёхмерном пространстве.';
   }
@@ -512,7 +585,7 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
     }
     this.projected.sort((a,b)=>a.depth-b.depth);
     const priority=this.hoveredId??this.activeId,chosen:ProjectedNode[]=[];
-    const candidates=this.projected.filter(p=>p.h>=74&&p.x>24&&p.x<this.width-24&&p.y>22&&p.y<this.height-25)
+    const candidates=(this.neighborhood?[]:this.projected).filter(p=>p.h>=74&&p.x>24&&p.x<this.width-24&&p.y>22&&p.y<this.height-25)
       .sort((a,b)=>Number(b.id===priority)-Number(a.id===priority)
         ||(Math.abs(a.h-174)-(this.details.has(a.id)?16:0))-(Math.abs(b.h-174)-(this.details.has(b.id)?16:0)));
     for(const p of candidates){
@@ -520,11 +593,15 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
       if(p.id!==priority&&chosen.some(q=>Math.abs(p.x-q.x)<(p.w+q.w)/2+12&&Math.abs(p.y-q.y)<(p.h+q.h)/2+12))continue;
       chosen.push(p);
     }
+    if(this.neighborhood){
+      const depth=this.camera.position.distanceTo(this.controls.target);
+      for(const card of this.renderedNeighborhoodCards(now))chosen.push({index:this.indices.get(card.id)!,id:card.id,x:card.x,y:card.y,w:card.w,h:card.h,depth});
+    }
     this.foreground=chosen;
-    if(this.cardVisibility){(this.cardVisibility.array as Float32Array).fill(0);for(const p of chosen)this.cardVisibility.setX(p.index,1);this.cardVisibility.needsUpdate=true;}
+    if(this.cardVisibility){(this.cardVisibility.array as Float32Array).fill(0);if(!this.neighborhood)for(const p of chosen)this.cardVisibility.setX(p.index,1);this.cardVisibility.needsUpdate=true;}
     this.syncDetails(chosen);this.lastProjection=now;
     if(now-this.lastDom>200){
-      const covers=chosen.slice().sort((a,b)=>a.y-b.y||a.x-b.x).map(p=>({id:p.id,label:`${this.typeLabel(this.nodes[p.index].type)}. ${this.nodes[p.index].label}. Связей: ${this.nodes[p.index].degree}. Открыть материал.`,x:p.x-p.w/2,y:p.y-p.h/2,w:p.w,h:p.h}));
+      const covers=chosen.slice().sort((a,b)=>a.y-b.y||a.x-b.x).map(p=>({id:p.id,label:`${this.typeLabel(this.nodes[p.index].type)}. ${this.nodes[p.index].label}. Связей: ${this.nodes[p.index].degree}. Выбрать узел на карте.`,x:p.x-p.w/2,y:p.y-p.h/2,w:p.w,h:p.h}));
       this.lastDom=now;const distance=this.camera.position.distanceTo(this.controls.target),zoom=this.fitDistance/distance;
       this.zone.run(()=>{this.accessibleCovers=covers;this.visibleCoverCount=this.projected.length;this.detailCoverCount=chosen.length;this.cameraDistance=Math.round(distance);this.cameraScale=Math.round(focal/distance*10000)/10000;
         if(Math.abs(zoom-this.lastZoom)>.01){this.lastZoom=zoom;this.viewportChange.emit({zoom:Math.round(zoom*100)/100});}this.cdr.markForCheck();});
@@ -540,6 +617,35 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
       if(cached){this.textureCache.delete(p.id);this.textureCache.set(p.id,cached);this.attachDetail(p,cached);}
       else this.pendingDetails.push(p);
     }
+  }
+
+  /** Camera-facing reading callouts, each tethered to its unchanged actual 3D node. */
+  private renderedNeighborhoodCards(now:number):NeighborhoodCard[]{
+    if(!this.neighborhood)return[];
+    const t=this.reduced?1:Math.min(1,Math.max(0,(now-this.calloutTransitionStart)/480)),ease=1-Math.pow(1-t,3);
+    return this.neighborhood.cards.map(target=>{
+      const from=this.calloutFrom.get(target.id);if(!from||t===1)return target;
+      return{...target,x:from.x+(target.x-from.x)*ease,y:from.y+(target.y-from.y)*ease,
+        w:from.w+(target.w-from.w)*ease,h:from.h+(target.h-from.h)*ease};
+    });
+  }
+
+  private updateNeighborhoodTargets(now:number):void{
+    this.overlayTargets.clear();if(!this.neighborhood||!this.controls)return;
+    this.camera.updateMatrixWorld();this.right.setFromMatrixColumn(this.camera.matrixWorld,0);this.up.setFromMatrixColumn(this.camera.matrixWorld,1);
+    this.camera.getWorldDirection(this.forward);
+    const depth=Math.min(this.camera.position.distanceTo(this.controls.target),Math.max(900,this.radius*.75));
+    const focal=this.height/(2*Math.tan(THREE.MathUtils.degToRad(this.camera.fov/2)));
+    const positions=this.neighborhoodTethers?.geometry.getAttribute('position') as THREE.BufferAttribute|undefined;
+    const cards=this.renderedNeighborhoodCards(now);
+    for(let i=0;i<cards.length;i++){
+      const card=cards[i];
+      const position=this.camera.position.clone().addScaledVector(this.forward,depth)
+        .addScaledVector(this.right,(card.x-this.width/2)*depth/focal).addScaledVector(this.up,(this.height/2-card.y)*depth/focal);
+      this.overlayTargets.set(card.id,{position,scale:new THREE.Vector3(card.w*depth/focal,card.h*depth/focal,1)});
+      if(positions){position.toArray(positions.array as Float32Array,i*6);this.flowing(this.positions[this.indices.get(card.id)!],this.temp).toArray(positions.array as Float32Array,i*6+3);}
+    }
+    if(positions){positions.needsUpdate=true;this.neighborhoodTethers!.computeLineDistances();}
   }
 
   private attachDetail(p:ProjectedNode,texture:THREE.CanvasTexture):void{
@@ -613,7 +719,10 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
     if(!this.baseLines||!this.controls)return;
     const distance=this.camera.position.distanceTo(this.controls.target);
     const overview=THREE.MathUtils.smoothstep(distance,this.radius*1.25,this.radius*2.5);
-    (this.baseLines.material as THREE.ShaderMaterial).uniforms['uOpacity'].value=(.032+overview*.048)/(this.highlightId?3:1);
+    // A selected neighborhood keeps the rest of the actual neural tissue visible.
+    // Incidental hover in free exploration can still quiet the background further.
+    (this.baseLines.material as THREE.ShaderMaterial).uniforms['uOpacity'].value=this.neighborhood
+      ? .048+overview*.007 : (.032+overview*.048)/(this.highlightId?3:1);
   }
 
   private draw(now:number):void{
@@ -626,18 +735,24 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
       this.camera.position.lerpVectors(f.fromEye,f.toEye,ease);this.controls.target.lerpVectors(f.fromTarget,f.toTarget,ease);
       if(t>=1)this.flight=null;
     }
-    this.controls.autoRotate=ambient&&!this.flight&&this.camera.position.distanceTo(this.controls.target)>this.radius*1.2;
+    this.controls.autoRotate=ambient&&!this.flight&&!this.neighborhood&&this.camera.position.distanceTo(this.controls.target)>this.radius*1.2;
     this.controls.update(dt);
     this.updateBaseOpacity();
-    if(now-this.lastProjection>90||this.flight||this.controlsMoving)this.updateProjection(now);
+    const calloutsMoving=!!this.neighborhood&&!this.reduced&&now-this.calloutTransitionStart<480;
+    if(now-this.lastProjection>90||this.flight||this.controlsMoving||calloutsMoving)this.updateProjection(now);
+    this.updateNeighborhoodTargets(now);
     this.buildOneDetail();
     const focal=this.height/(2*Math.tan(THREE.MathUtils.degToRad(this.camera.fov/2)));
     for(const [id,detail]of this.details){
-      const index=this.indices.get(id)!;this.flowing(this.positions[index],detail.sprite.position);
-      this.viewTemp.copy(detail.sprite.position).applyMatrix4(this.camera.matrixWorldInverse);const depth=-this.viewTemp.z;
-      const cap=Math.min(1,276/(COVER_H*focal/Math.max(1,depth))),grow=id===this.hoveredId?1.022:1;
-      detail.sprite.scale.set(COVER_W*cap*grow,COVER_H*cap*grow,1);
-      detail.material.opacity=Math.min(1,detail.material.opacity+dt*7);
+      const overlay=this.overlayTargets.get(id),grow=id===this.hoveredId?1.022:1;
+      if(overlay){detail.sprite.position.copy(overlay.position);detail.sprite.scale.copy(overlay.scale).multiplyScalar(grow);}
+      else{
+        const index=this.indices.get(id)!;this.flowing(this.positions[index],detail.sprite.position);
+        this.viewTemp.copy(detail.sprite.position).applyMatrix4(this.camera.matrixWorldInverse);const depth=-this.viewTemp.z;
+        const cap=Math.min(1,276/(COVER_H*focal/Math.max(1,depth)));
+        detail.sprite.scale.set(COVER_W*cap*grow,COVER_H*cap*grow,1);
+      }
+      detail.material.opacity=this.reduced?1:Math.min(1,detail.material.opacity+dt*4);
       detail.material.color.set(id===this.hoveredId||id===this.activeId?0xffffff:0xdddfe0);
     }
     let frameMoving=false;
@@ -651,6 +766,6 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
     }
     this.renderer.render(this.scene,this.camera);
     const damping=now-this.lastControlChange<900;
-    if(ambient||this.flight||this.controlsMoving||damping||frameMoving||this.pendingDetails.length||[...this.details.values()].some(d=>d.material.opacity<1))this.requestDraw();
+    if(ambient||this.flight||this.controlsMoving||damping||frameMoving||calloutsMoving||this.pendingDetails.length||[...this.details.values()].some(d=>d.material.opacity<1))this.requestDraw();
   }
 }

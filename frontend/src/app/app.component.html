@@ -5,16 +5,25 @@
     <nav aria-label="Навигация по атласу"><button (click)="openIndex()">Указатель<sup>{{nodes().length | number}}</sup></button><button (click)="openIndex('saved')" class="collection-link"><ui-icon name="bookmark"/><span>Коллекция</span><sup>{{saved().length}}</sup></button><button (click)="openAbout()" class="about-link">Об издании</button><a href="legacy.html" class="legacy-link">Legacy<ui-icon name="diagonal"/></a></nav>
     <button class="header-search" aria-label="Поиск по атласу" (click)="openIndex()"><ui-icon name="search"/><kbd>Ctrl K</kbd></button>
   </header>
-  <main id="map" class="map-workspace" tabindex="-1">
+  <main id="map" class="map-workspace" [class.has-selection]="!!selected()" tabindex="-1">
     @if(loadError()){
       <section class="load-state" role="alert"><span>×</span><h1>Карта не загрузилась</h1><p>Проверьте соединение и повторите попытку.</p><button class="solid-button" (click)="load()">Попробовать ещё раз<ui-icon name="arrow"/></button><a href="legacy.html">Открыть Legacy</a></section>
     } @else if(!data()){
       <section class="load-state" role="status"><span class="loading-sign">✳</span><h1>Собираем связи.</h1><p>50 книг. Одно пространство мысли.</p></section>
     } @else {
       <h1 class="sr-only">Атлас дискурса — единый объёмный граф материалов</h1>
-      <app-network class="network-surface" [nodes]="nodes()" [edges]="edges()" [activeId]="selectedId()" [focusId]="focusId()" [zoomAction]="zoomAction()" [motionPaused]="!motionEnabled()||dialogOpen()" (nodeSelect)="select($event)"/>
+      <app-network class="network-surface" [nodes]="nodes()" [edges]="edges()" [activeId]="selectedId()" [focusId]="focusId()" [neighborhoodPage]="neighborhoodPage()" [zoomAction]="zoomAction()" [motionPaused]="!motionEnabled()||dialogOpen()" (nodeSelect)="select($event)" (neighborhoodChange)="neighborhoodChanged($event)"/>
       <div class="map-caption" aria-hidden="true"><span class="archive-indicator"></span><span>РИЗОМА / 3D</span><i></i><span>50 КНИГ / 2002—2026</span></div>
-      <p class="map-gesture-hint"><span>ИССЛЕДУЙТЕ СВЯЗИ</span>Вращайте граф · Приближайте обложки<br>Shift + движение — перемещение</p>
+      <p class="map-gesture-hint"><span>{{selected()?'ПУТЕШЕСТВУЙТЕ ПО СВЯЗЯМ':'ИССЛЕДУЙТЕ СВЯЗИ'}}</span>{{selected()?'Выберите связанную обложку, чтобы продолжить.':'Выберите обложку — камера приблизится к ней.'}}<br>Вращение — мышь · Перемещение — Shift + мышь</p>
+      @if(selected();as node){
+        <aside class="focus-panel" aria-labelledby="focus-title">
+          <div class="focus-panel-top"><span class="micro">МАРШРУТ ЧТЕНИЯ</span><button class="icon-button" aria-label="Снять выбор узла" (click)="clearSelection()"><ui-icon name="close"/></button></div>
+          <span class="focus-type micro">{{types[node.type]}}</span><h2 id="focus-title">{{node.label}}</h2>
+          <div class="focus-actions"><button class="focus-read" (click)="openJournal(node.id)">Читать материал<ui-icon name="arrow"/></button><button class="focus-save" [attr.aria-label]="saved().includes(node.id)?'Удалить из коллекции':'Сохранить в коллекцию'" [attr.aria-pressed]="saved().includes(node.id)" (click)="toggleSave(node.id)"><ui-icon [name]="saved().includes(node.id)?'check':'bookmark'"/></button></div>
+          <nav class="neighborhood-pager" aria-label="Связанные обложки"><button aria-label="Предыдущие связанные обложки" [disabled]="neighborhoodPage()===0" (click)="turnNeighborhood(-1)"><ui-icon name="arrow"/></button><span aria-live="polite">{{neighborFirst()}}—{{neighborLast()}} <small>из {{related().length}} {{plural(related().length,['соседа','соседей','соседей'])}}</small></span><button aria-label="Следующие связанные обложки" [disabled]="neighborhoodPage()+1>=neighborhoodPages()" (click)="turnNeighborhood(1)"><ui-icon name="arrow"/></button></nav>
+          <p class="focus-note">Связанные обложки раскрыты для чтения. Выберите любую, чтобы продолжить путь.</p>
+        </aside>
+      }
       <div class="camera-controls" role="group" aria-label="Управление картой"><button aria-label="Увеличить карту" (click)="mapAction('in')"><ui-icon name="plus"/></button><button aria-label="Уменьшить карту" (click)="mapAction('out')"><ui-icon name="minus"/></button><span></span><button class="camera-text" aria-label="Вместить всю карту" (click)="mapAction('fit')"><ui-icon name="reset"/><span>Вся карта</span></button><button class="camera-text camera-read" (click)="startReading()"><span>Читать карту</span><ui-icon name="diagonal"/></button></div>
     }
   </main>
@@ -89,7 +98,7 @@
     <div class="dialog-topline"><span class="micro">ОБ АРХИВЕ</span><button id="about-close" class="icon-button" aria-label="Закрыть описание" (click)="closeDialog()"><ui-icon name="close"/></button></div>
     <span class="about-symbol" aria-hidden="true">✳</span><h2 id="about-title">Архитектура<br><em>мысли.</em></h2><p class="about-lead">50 книг Андрея Курпатова. {{nodes().length | number}} материалов. {{edges().length | number}} связей. Один объёмный граф.</p>
     <div class="about-section"><span>01</span><div><h3>Единое пространство</h3><p>Каждая обложка — реальный узел корпуса, каждая линия — размеченная связь. Положение рассчитано по структуре графа в трёх измерениях. Вращайте сеть и приближайте интересующие области. Все типы материалов находятся вместе.</p></div></div>
-    <div class="about-section"><span>02</span><div><h3>Личный маршрут чтения</h3><p>Наведите на обложку, чтобы проследить её связи. Откройте материал: внутри — полный контекст, восстановленные абзацы, цитаты с адресами источников и соседние узлы. Уникальный ASCII-образ обложки — визуальная интерпретация материала.</p></div></div>
+    <div class="about-section"><span>02</span><div><h3>Личный маршрут чтения</h3><p>Выберите обложку: камера плавно приблизится, а связанные материалы раскроются рядом. Переходите от обложки к обложке; весь граф остаётся на фоне. Стрелки перелистывают соседей, если их много. Кнопка «Читать материал» открывает полный контекст, восстановленные абзацы и цитаты с адресами источников. Уникальный ASCII-образ обложки — визуальная интерпретация материала.</p></div></div>
     <div class="about-section"><span>03</span><div><h3>Поиск, который понимает форму</h3><p>Введите понятие, вопрос или фрагмент цитаты. Поиск учитывает русские словоформы и опечатки, расширяет запрос близкими понятиями и показывает причину совпадения. Запрос обрабатывается локально в браузере. Платные API и подписка не нужны.</p></div></div>
     <div class="about-section"><span>04</span><div><h3>Точность источников</h3><p>Сплошная линия — текстовая отсылка; пунктирная — аналитическая реконструкция. Связь сама по себе не доказывает причинность. Источники сохраняют авторский голос и адрес фрагмента.</p></div></div>
     <a class="solid-button" href="legacy.html">Полные инструменты Legacy<ui-icon name="diagonal"/></a>

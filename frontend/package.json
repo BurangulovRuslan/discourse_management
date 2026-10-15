@@ -6,6 +6,7 @@
     "start": "node ../scripts/layout_explorer.mjs && ng serve --host 127.0.0.1",
     "layout": "node ../scripts/layout_explorer.mjs",
     "check:search": "node ../scripts/check_archive_search.mjs",
+    "check:neighborhood": "node ../scripts/check_neighborhood.mjs",
     "build": "node ../scripts/layout_explorer.mjs && ng build && node publish.mjs"
   },
   "dependencies": {

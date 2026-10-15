@@ -20,6 +20,8 @@ export class AppComponent {
   readonly loadError=signal(false);
   readonly selectedId=signal<string|null>(null);
   readonly focusId=signal<string|null>(null);
+  readonly neighborhoodPage=signal(0);
+  readonly neighborhoodPageSize=signal(8);
   readonly zoomAction=signal<{kind:'in'|'out'|'fit';seq:number}|null>(null);
   readonly indexOpen=signal(false);
   readonly indexMode=signal<IndexMode>('all');
@@ -75,8 +77,11 @@ export class AppComponent {
       const group=groups.get(other.id)!;if(edge.analytical)group.analytical=true;else group.literal=true;
       if('relation' in edge&&edge.relation)group.relations.add((edge.source===id?'→ ':'← ')+String(edge.relation));
     }
-    return [...groups.values()].map(g=>({node:g.node,relation:[...g.relations].join(' · '),analytical:g.analytical&&!g.literal,evidence:g.analytical&&g.literal?'Текстовые и аналитические связи':g.analytical?'Аналитическая связь':'Текстовая отсылка'})).sort((a,b)=>b.node.degree-a.node.degree);
+    return [...groups.values()].map(g=>({node:g.node,relation:[...g.relations].join(' · '),analytical:g.analytical&&!g.literal,evidence:g.analytical&&g.literal?'Текстовые и аналитические связи':g.analytical?'Аналитическая связь':'Текстовая отсылка'})).sort((a,b)=>b.node.degree-a.node.degree||a.node.id.localeCompare(b.node.id,'en'));
   });
+  readonly neighborhoodPages=computed(()=>Math.max(1,Math.ceil(this.related().length/this.neighborhoodPageSize())));
+  readonly neighborFirst=computed(()=>this.related().length?this.neighborhoodPage()*this.neighborhoodPageSize()+1:0);
+  readonly neighborLast=computed(()=>Math.min(this.related().length,(this.neighborhoodPage()+1)*this.neighborhoodPageSize()));
   readonly sourceBooks=computed(()=>(this.selected()?.books??[]).map(id=>this.bookMap().get(id)).filter((b):b is Book=>!!b));
   readonly nodeHits=computed(()=>{
     this.searchRevision();const q=this.query().trim(),mode=this.indexMode();
@@ -105,33 +110,57 @@ export class AppComponent {
     if(this.dossiers()||this.dossierLoading())return;this.dossierLoading.set(true);this.dossierError.set(false);
     try{const r=await fetch('explorer-dossiers.json');if(!r.ok)throw new Error();const dossiers:Dossiers=await r.json();this.dossiers.set(dossiers);this.contextSearchLoading.set(true);try{await this.archiveSearch.addDossiers(dossiers);this.searchRevision.update(v=>v+1);}finally{this.contextSearchLoading.set(false);}}catch{this.dossierError.set(true);}finally{this.dossierLoading.set(false);}
   }
-  openIndex(mode:IndexMode='all'){this.captureFocus();this.aboutOpen.set(false);this.journalOpen.set(false);this.indexMode.set(mode);this.query.set('');this.visibleLimit.set(40);this.indexOpen.set(true);setTimeout(()=>this.indexInput?.nativeElement.focus());void this.loadSearch();void this.loadDossiers();}
+  openIndex(mode:IndexMode='all'){this.captureFocus();this.leaveArticleAddress();this.aboutOpen.set(false);this.journalOpen.set(false);this.indexMode.set(mode);this.query.set('');this.visibleLimit.set(40);this.indexOpen.set(true);setTimeout(()=>this.indexInput?.nativeElement.focus());void this.loadSearch();void this.loadDossiers();}
   changeIndex(mode:IndexMode){this.indexMode.set(mode);this.visibleLimit.set(40);}
   updateQuery(value:string){this.query.set(value);this.visibleLimit.set(40);this.quoteResultLimit.set(20);}
   more(kind:'nodes'|'quotes'|'connections'|'quoteResults'){if(kind==='nodes')this.visibleLimit.update(v=>v+40);else if(kind==='quotes')this.quoteLimit.update(v=>v+8);else if(kind==='quoteResults')this.quoteResultLimit.update(v=>v+20);else this.connectionLimit.update(v=>v+12);}
-  openAbout(){this.captureFocus();this.indexOpen.set(false);this.journalOpen.set(false);this.aboutOpen.set(true);setTimeout(()=>document.getElementById('about-close')?.focus());}
+  openAbout(){this.captureFocus();this.leaveArticleAddress();this.indexOpen.set(false);this.journalOpen.set(false);this.aboutOpen.set(true);setTimeout(()=>document.getElementById('about-close')?.focus());}
   select(id:string,push=true){
-    if(!this.nodeMap().has(id))return;this.captureFocus();this.selectedId.set(id);this.indexOpen.set(false);this.aboutOpen.set(false);this.journalOpen.set(true);this.quoteLimit.set(4);this.connectionLimit.set(12);this.shareState.set('');this.shareFallback.set('');
-    if(push&&location.hash!=='#node='+encodeURIComponent(id))history.pushState(null,'','#node='+encodeURIComponent(id));void this.loadDossiers();void this.loadSearch();
+    if(!this.nodeMap().has(id))return;
+    const changed=this.selectedId()!==id;
+    this.selectedId.set(id);this.indexOpen.set(false);this.aboutOpen.set(false);this.journalOpen.set(false);
+    if(changed)this.neighborhoodPage.set(0);
+    if(this.focusId()!==id)this.focusId.set(id);else if(push)this.network?.focusNeighborhood(id,this.neighborhoodPage());
+    this.setNodeAddress(id,false,push);this.focusMap();
+  }
+  openJournal(id=this.selectedId(),push=true){
+    if(!id||!this.nodeMap().has(id))return;this.captureFocus();
+    if(this.selectedId()!==id){this.selectedId.set(id);this.focusId.set(id);this.neighborhoodPage.set(0);}
+    this.indexOpen.set(false);this.aboutOpen.set(false);this.journalOpen.set(true);this.quoteLimit.set(4);this.connectionLimit.set(12);this.shareState.set('');this.shareFallback.set('');
+    this.setNodeAddress(id,true,push);void this.loadDossiers();void this.loadSearch();
     setTimeout(()=>{document.getElementById('journal-scroll')?.scrollTo({top:0});document.getElementById('journal-title')?.focus({preventScroll:true});});
   }
-  showOnMap(){this.journalOpen.set(false);this.indexOpen.set(false);const id=this.selectedId();if(id&&this.focusId()===id)this.network?.focusNode(id);else this.focusId.set(id);this.focusMap();}
-  startReading(){this.selectedId.set(null);this.focusId.set(null);history.replaceState(null,'',location.pathname+location.search);this.network?.readMap();this.focusMap();}
+  private setNodeAddress(id:string,article:boolean,push:boolean){
+    if(!push)return;const hash='#node='+encodeURIComponent(id)+(article?'&view=article':'');
+    if(location.hash!==hash){
+      const current=new URLSearchParams(location.hash.slice(1));
+      if(article&&(current.get('node')??current.get('book'))===id)history.replaceState(null,'',hash);
+      else history.pushState(null,'',hash);
+    }
+  }
+  private leaveArticleAddress(){if(this.journalOpen()&&this.selectedId())history.replaceState(null,'','#node='+encodeURIComponent(this.selectedId()!));}
+  showOnMap(){this.journalOpen.set(false);this.indexOpen.set(false);const id=this.selectedId();if(id){history.replaceState(null,'','#node='+encodeURIComponent(id));this.network?.focusNeighborhood(id,this.neighborhoodPage());}this.focusMap();}
+  neighborhoodChanged(view:{id:string;page:number;pageSize:number}){if(view.id!==this.selectedId())return;this.neighborhoodPageSize.set(view.pageSize);this.neighborhoodPage.set(view.page);}
+  turnNeighborhood(direction:number){this.neighborhoodPage.update(page=>Math.max(0,Math.min(this.neighborhoodPages()-1,page+direction)));}
+  clearSelection(){this.selectedId.set(null);this.focusId.set(null);this.neighborhoodPage.set(0);history.replaceState(null,'',location.pathname+location.search);this.focusMap();}
+  startReading(){this.clearSelection();this.network?.readMap();}
   paragraphs(text:string,blocks?:string[]){return blocks?.length?blocks:text?[text]:[];}
-  mapAction(kind:'in'|'out'|'fit'){this.zoomAction.set({kind,seq:++this.actionSequence});if(kind==='fit'){this.selectedId.set(null);this.focusId.set(null);history.replaceState(null,'',location.pathname+location.search);}}
-  closeDialog(){this.indexOpen.set(false);this.aboutOpen.set(false);this.journalOpen.set(false);setTimeout(()=>{if(this.returnFocus?.isConnected)this.returnFocus.focus();else this.focusMap();});}
+  mapAction(kind:'in'|'out'|'fit'){this.zoomAction.set({kind,seq:++this.actionSequence});if(kind==='fit')this.clearSelection();}
+  closeDialog(){this.leaveArticleAddress();this.indexOpen.set(false);this.aboutOpen.set(false);this.journalOpen.set(false);setTimeout(()=>{if(this.returnFocus?.isConnected&&this.returnFocus!==document.body&&this.returnFocus!==document.documentElement)this.returnFocus.focus();else this.focusMap();});}
   captureFocus(){if(!this.dialogOpen())this.returnFocus=document.activeElement as HTMLElement;}
   focusMap(){setTimeout(()=>document.querySelector<HTMLElement>('app-network')?.focus());}
   toggleSave(id:string){this.saved.update(ids=>ids.includes(id)?ids.filter(v=>v!==id):[...ids,id]);try{localStorage.setItem('atlas-saved',JSON.stringify(this.saved()));}catch{/* Collection remains available for this session. */}}
-  async copyLink(){const url=location.origin+location.pathname+'#node='+encodeURIComponent(this.selectedId()??'');try{await navigator.clipboard.writeText(url);this.shareState.set('Ссылка скопирована');clearTimeout(this.sharedTimer);this.sharedTimer=setTimeout(()=>this.shareState.set(''),3000);}catch{this.shareFallback.set(url);}}
+  async copyLink(){const url=location.origin+location.pathname+'#node='+encodeURIComponent(this.selectedId()??'')+'&view=article';try{await navigator.clipboard.writeText(url);this.shareState.set('Ссылка скопирована');clearTimeout(this.sharedTimer);this.sharedTimer=setTimeout(()=>this.shareState.set(''),3000);}catch{this.shareFallback.set(url);}}
   scrollArticle(id:string){document.getElementById(id)?.scrollIntoView({block:'start'});}
   @HostListener('window:hashchange') @HostListener('window:popstate') applyHash(){
-    const m=location.hash.match(/^#(?:node|book)=(.+)$/);let id='';try{id=m?decodeURIComponent(m[1]):'';}catch{/* Ignore malformed addresses. */}
-    if(this.nodeMap().has(id))this.select(id,false);else{const wasOpen=this.journalOpen();this.selectedId.set(null);this.journalOpen.set(false);if(wasOpen)this.focusMap();}
+    const address=new URLSearchParams(location.hash.slice(1)),id=address.get('node')??address.get('book')??'';
+    if(this.nodeMap().has(id)){if(address.get('view')==='article')this.openJournal(id,false);else this.select(id,false);}
+    else{const hadFocus=this.journalOpen()||!!this.selectedId();this.selectedId.set(null);this.focusId.set(null);this.journalOpen.set(false);this.neighborhoodPage.set(0);if(hadFocus)this.focusMap();}
   }
   @HostListener('document:keydown',['$event']) keydown(event:KeyboardEvent){
     if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='k'){event.preventDefault();this.openIndex();}
-    if(event.key==='Escape'&&this.dialogOpen()){event.preventDefault();this.closeDialog();}
+    if(event.key==='Escape'){if(this.dialogOpen()){event.preventDefault();this.closeDialog();}else if(this.selectedId()){event.preventDefault();this.clearSelection();}}
+    if(event.key==='0'&&!this.dialogOpen()&&(event.target as HTMLElement)?.tagName==='APP-NETWORK')this.clearSelection();
     if(event.key==='Tab'&&this.dialogOpen()){
       const id=this.indexOpen()?'index-dialog':this.aboutOpen()?'about-dialog':'journal-dialog';
       const items=document.getElementById(id)?.querySelectorAll<HTMLElement>('button:not(:disabled),a[href],input,select,[tabindex="0"]');
