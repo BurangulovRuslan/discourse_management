@@ -47,7 +47,7 @@
     "lexical_candidate_edges": 296
   },
   "file_count": 64,
-  "bytes": 141945606,
+  "bytes": 141951966,
   "files": [
     {
       "path": ".nojekyll",
@@ -65,14 +65,14 @@
       "sha256": "e7e9d6aeb7a9e39a1b7fcd453add75db35d2240e1f96044a7aad2e024aeb399f"
     },
     {
-      "path": "assets/explorer/main-ZCTUHXIM.js",
-      "bytes": 805995,
-      "sha256": "cbd5f4c0da254739748bc4be63fcf636dead344db9b32b089a31079f3ad37f07"
+      "path": "assets/explorer/main-ZL6LXJQX.js",
+      "bytes": 811693,
+      "sha256": "54c87d30efffd818122d43e28c62a7069ac3dfce9bbbafb8c286103613b75349"
     },
     {
-      "path": "assets/explorer/styles-OKI2JR4X.css",
-      "bytes": 48385,
-      "sha256": "fb45d454b20764e906c8e95fca73dbbd3adc4ea39b9bf1829f2db3c11a92f105"
+      "path": "assets/explorer/styles-Y2I32NAY.css",
+      "bytes": 49047,
+      "sha256": "52f335f8741c54fd8d2d5e5b952155d85e4953d1f909a2536a7499434256b124"
     },
     {
       "path": "atlas-data.json",
@@ -102,7 +102,7 @@
     {
       "path": "index.html",
       "bytes": 1806,
-      "sha256": "24e78bd3983ad71010e3031f5b1ed5ab22b0d35749831ffc85749b0443c504ee"
+      "sha256": "255276e4b5065a9622c43e8b8831404b7d48d20b6d7ae3722fdd29a71ece5ff6"
     },
     {
       "path": "kurpatov.graphml",

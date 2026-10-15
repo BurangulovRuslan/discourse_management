@@ -5,7 +5,7 @@ import {
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { paintCover } from './cover-art';
-import { getNeighborhoodLayout, NeighborhoodCard, NeighborhoodLayout } from './neighborhood-layout';
+import { getSpatialNeighborhood, SpatialNeighborhood } from './neighborhood-layout';
 export { NEIGHBORHOOD_PAGE_SIZE, NEIGHBORHOOD_MOBILE_PAGE_SIZE } from './neighborhood-layout';
 
 export interface NetworkNode { id: string; type: string; label: string; x: number; y: number; z?: number; degree: number; }
@@ -15,6 +15,7 @@ interface ProjectedNode { index: number; id: string; x: number; y: number; w: nu
 interface AccessibleCover { id: string; label: string; x: number; y: number; w: number; h: number; }
 interface DetailCover { sprite: THREE.Sprite; texture: THREE.CanvasTexture; material: THREE.SpriteMaterial; node: NetworkNode; }
 interface CameraFlight { fromEye: THREE.Vector3; toEye: THREE.Vector3; fromTarget: THREE.Vector3; toTarget: THREE.Vector3; started: number; duration: number; }
+interface OffsetFlight { from:THREE.Vector3; to:THREE.Vector3; started:number; duration:number; }
 
 const COVER_W = 168, COVER_H = 224, ATLAS_SIZE = 2048, TILE_W = 24, TILE_H = 32, DETAIL_BUDGET = 24, CURVE_STEPS = 10;
 // The same field is evaluated by graph vertices, spline vertices, particles and CPU hit targets.
@@ -25,13 +26,18 @@ const WAVE_GLSL = `
       sin(p.x*.0013+p.y*.0011+uTime*.265)*8.0) * uMotion;
   }
 `;
+const OFFSET_GLSL = `
+  uniform sampler2D uOffsets; uniform vec2 uOffsetSize;
+  vec3 nodeOffset(float index){vec2 cell=vec2(mod(index,uOffsetSize.x),floor(index/uOffsetSize.x));return texture2D(uOffsets,(cell+.5)/uOffsetSize).xyz;}
+`;
 const CARD_VERTEX = `
   uniform float uTime; uniform float uMotion; uniform float uHeight;
-  attribute vec3 aCenter; attribute vec2 aTile; attribute float aHeat; attribute float aVisible;
+  attribute vec3 aCenter; attribute vec2 aTile; attribute float aHeat; attribute float aVisible; attribute float aIndex;
   varying vec2 vUv; varying float vHeat; varying float vSize; varying float vDepth; varying float vVisible;
   ${WAVE_GLSL}
+  ${OFFSET_GLSL}
   void main() {
-    vec4 center = modelViewMatrix * vec4(flowing(aCenter),1.0);
+    vec4 center = modelViewMatrix * vec4(flowing(aCenter+nodeOffset(aIndex)),1.0);
     float size = 224.0 * projectionMatrix[1][1] * uHeight*.5 / max(1.0,-center.z);
     float cap = min(1.0,276.0/max(1.0,size));
     center.xy += position.xy * cap * (1.0 + .022 * min(aHeat,1.0));
@@ -58,10 +64,11 @@ const CARD_FRAGMENT = `
 `;
 const LINE_VERTEX = `
   uniform float uTime; uniform float uMotion;
-  attribute float aKind; attribute float aDistance;
+  attribute float aKind; attribute float aDistance; attribute float aSource; attribute float aTarget; attribute float aProgress;
   varying float vKind; varying float vDistance; varying float vDepth;
   ${WAVE_GLSL}
-  void main(){vec4 p=modelViewMatrix*vec4(flowing(position),1.0);gl_Position=projectionMatrix*p;vKind=aKind;vDistance=aDistance;vDepth=-p.z;}
+  ${OFFSET_GLSL}
+  void main(){vec3 displaced=position+mix(nodeOffset(aSource),nodeOffset(aTarget),aProgress);vec4 p=modelViewMatrix*vec4(flowing(displaced),1.0);gl_Position=projectionMatrix*p;vKind=aKind;vDistance=aDistance;vDepth=-p.z;}
 `;
 const LINE_FRAGMENT = `
   uniform vec3 uColor; uniform float uOpacity; uniform float uFog;
@@ -73,10 +80,11 @@ const LINE_FRAGMENT = `
 `;
 const POINT_VERTEX = `
   uniform float uTime; uniform float uMotion; uniform float uDpr;
-  attribute float aDegree; attribute float aHeat;
+  attribute float aDegree; attribute float aHeat; attribute float aIndex;
   varying float vHeat; varying float vDepth;
   ${WAVE_GLSL}
-  void main(){vec4 p=modelViewMatrix*vec4(flowing(position),1.0);gl_Position=projectionMatrix*p;
+  ${OFFSET_GLSL}
+  void main(){vec4 p=modelViewMatrix*vec4(flowing(position+nodeOffset(aIndex)),1.0);gl_Position=projectionMatrix*p;
     gl_PointSize=uDpr*(1.65+min(3.5,log(1.0+aDegree)*.52)+aHeat*1.5);vHeat=aHeat;vDepth=-p.z;}
 `;
 const POINT_FRAGMENT = `
@@ -91,11 +99,12 @@ const POINT_FRAGMENT = `
 const PARTICLE_VERTEX = `
   uniform float uTime; uniform float uMotion; uniform float uDpr; uniform float uSize;
   attribute vec3 aStart; attribute vec3 aC1; attribute vec3 aC2; attribute vec3 aEnd;
-  attribute float aPhase; attribute float aSpeed;
+  attribute float aPhase; attribute float aSpeed; attribute float aSource; attribute float aTarget;
   ${WAVE_GLSL}
+  ${OFFSET_GLSL}
   void main(){float t=fract(aPhase+uTime*.038*aSpeed);float s=1.0-t;
     vec3 p=s*s*s*aStart+3.0*s*s*t*aC1+3.0*s*t*t*aC2+t*t*t*aEnd;
-    gl_Position=projectionMatrix*modelViewMatrix*vec4(flowing(p),1.0);gl_PointSize=uDpr*uSize;}
+    p+=mix(nodeOffset(aSource),nodeOffset(aTarget),t);gl_Position=projectionMatrix*modelViewMatrix*vec4(flowing(p),1.0);gl_PointSize=uDpr*uSize;}
 `;
 const PARTICLE_FRAGMENT = `
   uniform float uOpacity;
@@ -145,7 +154,7 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
   @Input() zoomAction: {kind:'in'|'out'|'fit';seq:number}|null = null;
   @Output() nodeSelect = new EventEmitter<string>();
   @Output() viewportChange = new EventEmitter<{zoom:number}>();
-  @Output() neighborhoodChange = new EventEmitter<Omit<NeighborhoodLayout,'cards'>>();
+  @Output() neighborhoodChange = new EventEmitter<{id:string;page:number;pageSize:number;total:number;totalPages:number;neighborIds:string[];totalEdges:number}>();
   @HostBinding('attr.data-node-count') get nodeCount(){return this.nodes.length;}
   @HostBinding('attr.data-edge-count') get edgeCount(){return this.edges.length;}
   @HostBinding('attr.data-cover-count') get coverCount(){return this.nodes.length;}
@@ -162,6 +171,10 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
   @HostBinding('attr.data-neighborhood-page-size') get neighborhoodPageSize(){return this.neighborhood?.pageSize??null;}
   @HostBinding('attr.data-neighborhood-total') get neighborhoodTotal(){return this.neighborhood?.total??null;}
   @HostBinding('attr.data-neighborhood-neighbor-ids') get neighborhoodIds(){return this.neighborhood?JSON.stringify(this.neighborhood.neighborIds):null;}
+  @HostBinding('attr.data-neighborhood-mode') get neighborhoodMode(){return this.neighborhood?'world':null;}
+  @HostBinding('attr.data-neighborhood-world-targets') get neighborhoodWorldTargets(){return this.neighborhood?JSON.stringify(this.neighborhood.targets.map(t=>[t.id,t.x,t.y,t.z])):null;}
+  @HostBinding('attr.data-focus-edge-count') focusEdgeCount=0;
+  @HostBinding('attr.data-layout-moving') layoutMoving=false;
   @ViewChild('surface',{static:true}) private surface!:ElementRef<HTMLCanvasElement>;
   accessibleCovers:AccessibleCover[]=[];
   status=''; renderError=false;
@@ -182,6 +195,7 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
   private nodeHeat:THREE.InstancedBufferAttribute|null=null;private cardVisibility:THREE.InstancedBufferAttribute|null=null;
   private pointHeat:THREE.BufferAttribute|null=null;
   private highlight:THREE.LineSegments|null=null;private activeParticles:THREE.Points|null=null;
+  private quietIncident:THREE.LineSegments|null=null;private quietParticles:THREE.Points|null=null;
   private baseLines:THREE.LineSegments|null=null;
   private sourceFrame:THREE.Sprite|null=null;private sourceFrameTexture:THREE.CanvasTexture|null=null;
   private details=new Map<string,DetailCover>();private hoveredId:string|null=null;private keyboardId:string|null=null;
@@ -193,12 +207,13 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
   private pointerIds=new Set<number>();private multiPointer=false;
   private lastZoom=-1;private temp=new THREE.Vector3();private viewTemp=new THREE.Vector3();private ndc=new THREE.Vector3();
   private inverseView=new THREE.Matrix4();private right=new THREE.Vector3();private up=new THREE.Vector3();
-  private neighborhood:NeighborhoodLayout|null=null;
-  private neighborhoodTethers:THREE.LineSegments|null=null;
-  private overlayTargets=new Map<string,{position:THREE.Vector3;scale:THREE.Vector3}>();
-  private forward=new THREE.Vector3();
+  private neighborhood:SpatialNeighborhood|null=null;
+  private neighborhoodDirection=new THREE.Vector3(.5,.3,1).normalize();
   private highlightSignature='';
-  private calloutFrom=new Map<string,NeighborhoodCard>();private calloutTransitionStart=0;
+  private offsetData=new Float32Array(0);private currentOffsets:THREE.Vector3[]=[];
+  private offsetTexture:THREE.DataTexture|null=null;
+  private offsetUniform={value:null as THREE.DataTexture|null};private offsetSizeUniform={value:new THREE.Vector2(256,1)};
+  private offsetFlights=new Map<number,OffsetFlight>();
 
   constructor(private zone:NgZone,private cdr:ChangeDetectorRef){}
 
@@ -246,7 +261,7 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
       this.updateHighlight();
     }
     if(changes['focusId']&&this.focusId)this.focusNode(this.focusId);
-    else if(changes['neighborhoodPage']&&this.neighborhood)this.setNeighborhood(this.neighborhood.id,this.neighborhoodPage,false);
+    else if(changes['neighborhoodPage']&&this.neighborhood)this.setNeighborhood(this.neighborhood.id,this.neighborhoodPage,true);
     if(changes['zoomAction']&&this.zoomAction){
       if(this.zoomAction.kind==='fit')this.fit();else this.zoom(this.zoomAction.kind==='in'?1/1.35:1.35);
     }
@@ -285,38 +300,64 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
 
   private setNeighborhood(id:string,page:number,fly:boolean):void{
     const index=this.indices.get(id);if(index===undefined||!this.controls||!this.width||!this.height)return;
-    this.calloutFrom=new Map(this.foreground.map(p=>[p.id,{id:p.id,selected:p.id===this.neighborhood?.id,x:p.x,y:p.y,w:p.w,h:p.h}]));
-    this.calloutTransitionStart=performance.now();
-    this.neighborhood=getNeighborhoodLayout(this.nodes,this.edges,id,page,{width:this.width,height:this.height});
-    this.hoveredId=null;this.keyboardId=null;this.lastProjection=0;this.highlightSignature='';
-    this.buildNeighborhoodTethers();this.updateHighlight(id);
-    if(fly){
-      this.camera.updateMatrixWorld();
-      const selected=this.neighborhood.cards[0],focal=this.height/(2*Math.tan(THREE.MathUtils.degToRad(this.camera.fov/2)));
-      const distance=Math.max(500,focal*COVER_H/Math.max(140,selected.h));
-      this.right.setFromMatrixColumn(this.camera.matrixWorld,0);this.up.setFromMatrixColumn(this.camera.matrixWorld,1);
-      const framing=this.positions[index].clone().addScaledVector(this.right,-(selected.x-this.width/2)*distance/focal)
-        .addScaledVector(this.up,-(this.height/2-selected.y)*distance/focal);
-      this.flyTo(framing,distance,980);
+    this.neighborhoodDirection.copy(this.positions[index]).sub(this.center);
+    if(this.neighborhoodDirection.lengthSq()<100)this.neighborhoodDirection.copy(this.camera.position).sub(this.controls.target);
+    this.neighborhoodDirection.normalize();
+    // Keep the one-shot entry basis compatible with the orbit camera's global up.
+    if(Math.abs(this.neighborhoodDirection.y)>.93){
+      const horizontal=Math.hypot(this.neighborhoodDirection.x,this.neighborhoodDirection.z);
+      if(horizontal<.00001)this.neighborhoodDirection.set(.4,Math.sign(this.neighborhoodDirection.y)*.8,.4);
+      else this.neighborhoodDirection.y=Math.sign(this.neighborhoodDirection.y)*horizontal*1.8;
+      this.neighborhoodDirection.normalize();
     }
-    const {cards,...state}=this.neighborhood;
+    this.neighborhood=getSpatialNeighborhood(this.nodes.map(n=>({...n,z:n.z??0})),this.edges,id,page,{width:this.width,height:this.height},this.neighborhoodDirection);
+    this.startOffsetTransition(this.neighborhood.targets);
+    this.hoveredId=null;this.keyboardId=null;this.lastProjection=0;this.highlightSignature='';
+    this.updateHighlight(id);
+    if(fly){
+      const entry=this.neighborhood.entryCamera,toEye=new THREE.Vector3(entry.position.x,entry.position.y,entry.position.z),toTarget=new THREE.Vector3(entry.target.x,entry.target.y,entry.target.z);
+      this.camera.fov=entry.fov;this.camera.updateProjectionMatrix();
+      if(this.reduced){this.camera.position.copy(toEye);this.controls.target.copy(toTarget);this.controls.update();this.flight=null;}
+      else this.flight={fromEye:this.camera.position.clone(),toEye,fromTarget:this.controls.target.clone(),toTarget,started:performance.now(),duration:980};
+    }
+    const {id:nodeId,page:currentPage,pageSize,total,totalPages,neighborIds}=this.neighborhood;
+    const state={id:nodeId,page:currentPage,pageSize,total,totalPages,neighborIds,totalEdges:this.edges.filter(e=>e.source===id||e.target===id).length};
+    this.focusEdgeCount=state.totalEdges;
     this.zone.run(()=>{this.neighborhoodChange.emit(state);this.cdr.markForCheck();});
-    const node=this.nodes[index];this.status=`${node.label}. Связанных материалов: ${state.total}. Выносные обложки привязаны к реальным узлам тонкими линиями.`;
+    const node=this.nodes[index];this.status=`${node.label}. Соседей: ${state.total}. Реальных связей: ${state.totalEdges}. Крупно показана часть соседей; остальные связи остаются в общей ризоме.`;
     this.requestDraw();
   }
 
   private clearNeighborhood():void{
-    this.neighborhood=null;this.overlayTargets.clear();this.calloutFrom.clear();this.highlightSignature='';
-    if(this.neighborhoodTethers){this.graph.remove(this.neighborhoodTethers);this.neighborhoodTethers.geometry.dispose();(this.neighborhoodTethers.material as THREE.Material).dispose();this.neighborhoodTethers=null;}
+    this.neighborhood=null;this.startOffsetTransition([]);this.highlightSignature='';this.focusEdgeCount=0;
     this.lastProjection=0;
   }
 
-  private buildNeighborhoodTethers():void{
-    if(this.neighborhoodTethers){this.graph.remove(this.neighborhoodTethers);this.neighborhoodTethers.geometry.dispose();(this.neighborhoodTethers.material as THREE.Material).dispose();}
-    if(!this.neighborhood){this.neighborhoodTethers=null;return;}
-    const geometry=new THREE.BufferGeometry();geometry.setAttribute('position',new THREE.BufferAttribute(new Float32Array(this.neighborhood.cards.length*6),3));
-    const material=new THREE.LineDashedMaterial({color:0xa2b4bd,transparent:true,opacity:.28,dashSize:10,gapSize:9,depthTest:false,depthWrite:false});
-    this.neighborhoodTethers=new THREE.LineSegments(geometry,material);this.neighborhoodTethers.frustumCulled=false;this.neighborhoodTethers.renderOrder=2;this.graph.add(this.neighborhoodTethers);
+  private startOffsetTransition(targets:ReadonlyArray<{id:string;x:number;y:number;z:number}>):void{
+    const desired=new Map(targets.map(t=>[this.indices.get(t.id)!,new THREE.Vector3(t.x,t.y,t.z).sub(this.positions[this.indices.get(t.id)!])]));
+    const now=performance.now();this.offsetFlights.clear();
+    for(let i=0;i<this.currentOffsets.length;i++){
+      const current=this.currentOffsets[i],to=desired.get(i)??new THREE.Vector3();
+      if(current.distanceToSquared(to)<.00001)continue;
+      if(this.reduced){current.copy(to);this.writeOffset(i);}
+      else this.offsetFlights.set(i,{from:current.clone(),to,started:now,duration:1050});
+    }
+    if(this.offsetTexture)this.offsetTexture.needsUpdate=true;
+  }
+
+  private writeOffset(index:number):void{
+    this.currentOffsets[index].toArray(this.offsetData,index*4);
+  }
+
+  private updateRuntimeOffsets(now:number):boolean{
+    if(!this.offsetFlights.size)return false;
+    for(const [index,flight]of this.offsetFlights){
+      const t=this.reduced?1:Math.min(1,(now-flight.started)/flight.duration),ease=t*t*(3-2*t);
+      this.currentOffsets[index].lerpVectors(flight.from,flight.to,ease);this.writeOffset(index);
+      if(t>=1)this.offsetFlights.delete(index);
+    }
+    if(this.offsetTexture)this.offsetTexture.needsUpdate=true;
+    return this.offsetFlights.size>0;
   }
 
   onKeydown(event:KeyboardEvent):void{
@@ -352,6 +393,11 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
     this.disposeGraph();this.graph=new THREE.Group();this.scene.add(this.graph);
     this.nodeMap=new Map(this.nodes.map(n=>[n.id,n]));this.indices=new Map(this.nodes.map((n,i)=>[n.id,i]));
     this.adjacency.clear();this.positions=this.nodes.map(n=>new THREE.Vector3(n.x,n.y,n.z??0));
+    const offsetHeight=Math.max(1,Math.ceil(this.nodes.length/256));
+    this.offsetData=new Float32Array(256*offsetHeight*4);this.currentOffsets=this.nodes.map(()=>new THREE.Vector3());this.offsetFlights.clear();
+    this.offsetTexture=new THREE.DataTexture(this.offsetData,256,offsetHeight,THREE.RGBAFormat,THREE.FloatType);
+    this.offsetTexture.minFilter=THREE.NearestFilter;this.offsetTexture.magFilter=THREE.NearestFilter;this.offsetTexture.generateMipmaps=false;this.offsetTexture.needsUpdate=true;
+    this.offsetUniform.value=this.offsetTexture;this.offsetSizeUniform.value.set(256,offsetHeight);
     const bounds=new THREE.Box3().setFromPoints(this.positions);bounds.getCenter(this.center);
     this.radius=Math.max(600,...this.positions.map(position=>position.distanceTo(this.center)));
     const halfFov=THREE.MathUtils.degToRad(this.camera.fov/2);this.fitDistance=this.radius/Math.sin(halfFov)*1.12;
@@ -381,7 +427,8 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
       if(renderable.material){for(const mat of Array.isArray(renderable.material)?renderable.material:[renderable.material])mat.dispose();}
     });
     this.scene.remove(this.graph);this.atlas?.dispose();this.atlas=null;this.sourceFrameTexture?.dispose();this.sourceFrameTexture=null;this.sourceFrame=null;
-    this.highlight=null;this.baseLines=null;this.activeParticles=null;this.highlightId=null;this.highlightSignature='';this.neighborhoodTethers=null;
+    this.highlight=null;this.baseLines=null;this.activeParticles=null;this.quietIncident=null;this.quietParticles=null;this.highlightId=null;this.highlightSignature='';
+    this.offsetTexture?.dispose();this.offsetTexture=null;this.offsetUniform.value=null;this.offsetFlights.clear();
   }
 
   private buildCurves():void{
@@ -427,24 +474,26 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
     this.atlasTimer=setTimeout(chunk,0);
   }
 
-  private commonUniforms(){return{uTime:this.timeUniform,uMotion:this.motionUniform,uFog:{value:this.radius*4+2200}};}
+  private commonUniforms(){return{uTime:this.timeUniform,uMotion:this.motionUniform,uFog:{value:this.radius*4+2200},uOffsets:this.offsetUniform,uOffsetSize:this.offsetSizeUniform};}
 
   private buildNodeMesh():void{
     const base=new THREE.PlaneGeometry(COVER_W,COVER_H);const geometry=new THREE.InstancedBufferGeometry();
     geometry.index=base.index;geometry.setAttribute('position',base.getAttribute('position'));geometry.setAttribute('uv',base.getAttribute('uv'));
     geometry.instanceCount=this.nodes.length;
-    const centers=new Float32Array(this.nodes.length*3),tiles=new Float32Array(this.nodes.length*2),degrees=new Float32Array(this.nodes.length),columns=Math.floor(ATLAS_SIZE/TILE_W);
+    const centers=new Float32Array(this.nodes.length*3),tiles=new Float32Array(this.nodes.length*2),degrees=new Float32Array(this.nodes.length),indices=new Float32Array(this.nodes.length),columns=Math.floor(ATLAS_SIZE/TILE_W);
     for(let i=0;i<this.nodes.length;i++){
-      this.positions[i].toArray(centers,i*3);degrees[i]=this.nodes[i].degree;
+      this.positions[i].toArray(centers,i*3);degrees[i]=this.nodes[i].degree;indices[i]=i;
       tiles[i*2]=(i%columns*TILE_W+1)/ATLAS_SIZE;tiles[i*2+1]=1-(Math.floor(i/columns)*TILE_H+TILE_H-1)/ATLAS_SIZE;
     }
     geometry.setAttribute('aCenter',new THREE.InstancedBufferAttribute(centers,3));geometry.setAttribute('aTile',new THREE.InstancedBufferAttribute(tiles,2));
+    geometry.setAttribute('aIndex',new THREE.InstancedBufferAttribute(indices,1));
     this.nodeHeat=new THREE.InstancedBufferAttribute(new Float32Array(this.nodes.length),1);geometry.setAttribute('aHeat',this.nodeHeat);
     this.cardVisibility=new THREE.InstancedBufferAttribute(new Float32Array(this.nodes.length),1);geometry.setAttribute('aVisible',this.cardVisibility);
     const material=new THREE.ShaderMaterial({vertexShader:CARD_VERTEX,fragmentShader:CARD_FRAGMENT,uniforms:{...this.commonUniforms(),uAtlas:{value:this.atlas},uHeight:{value:this.height}},side:THREE.DoubleSide});
     const mesh=new THREE.Mesh(geometry,material);mesh.frustumCulled=false;mesh.renderOrder=1;this.graph.add(mesh);
     const pointsGeometry=new THREE.BufferGeometry();pointsGeometry.setAttribute('position',new THREE.BufferAttribute(centers,3));
     pointsGeometry.setAttribute('aDegree',new THREE.BufferAttribute(degrees,1));this.pointHeat=new THREE.BufferAttribute(new Float32Array(this.nodes.length),1);pointsGeometry.setAttribute('aHeat',this.pointHeat);
+    pointsGeometry.setAttribute('aIndex',new THREE.BufferAttribute(indices,1));
     const pointsMaterial=new THREE.ShaderMaterial({vertexShader:POINT_VERTEX,fragmentShader:POINT_FRAGMENT,uniforms:{...this.commonUniforms(),uDpr:{value:this.dpr}},transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
     const points=new THREE.Points(pointsGeometry,pointsMaterial);points.frustumCulled=false;this.graph.add(points);
   }
@@ -454,18 +503,19 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
   }
 
   private createLines(curves:ActualCurve[],active:boolean):THREE.LineSegments{
-    const count=curves.length*CURVE_STEPS*2,positions=new Float32Array(count*3),kinds=new Float32Array(count),distances=new Float32Array(count);
+    const count=curves.length*CURVE_STEPS*2,positions=new Float32Array(count*3),kinds=new Float32Array(count),distances=new Float32Array(count),sources=new Float32Array(count),targets=new Float32Array(count),progress=new Float32Array(count);
     let vertex=0;const a=new THREE.Vector3(),b=new THREE.Vector3();
     for(const curve of curves){
       let distance=0;this.curvePoint(curve,0,a);
       for(let step=0;step<CURVE_STEPS;step++){
         this.curvePoint(curve,(step+1)/CURVE_STEPS,b);const nextDistance=distance+a.distanceTo(b);
-        a.toArray(positions,vertex*3);kinds[vertex]=Number(curve.analytical);distances[vertex++]=distance;
-        b.toArray(positions,vertex*3);kinds[vertex]=Number(curve.analytical);distances[vertex++]=nextDistance;
+        a.toArray(positions,vertex*3);kinds[vertex]=Number(curve.analytical);sources[vertex]=curve.source;targets[vertex]=curve.target;progress[vertex]=step/CURVE_STEPS;distances[vertex++]=distance;
+        b.toArray(positions,vertex*3);kinds[vertex]=Number(curve.analytical);sources[vertex]=curve.source;targets[vertex]=curve.target;progress[vertex]=(step+1)/CURVE_STEPS;distances[vertex++]=nextDistance;
         a.copy(b);distance=nextDistance;
       }
     }
     const geometry=new THREE.BufferGeometry();geometry.setAttribute('position',new THREE.BufferAttribute(positions,3));geometry.setAttribute('aKind',new THREE.BufferAttribute(kinds,1));geometry.setAttribute('aDistance',new THREE.BufferAttribute(distances,1));
+    geometry.setAttribute('aSource',new THREE.BufferAttribute(sources,1));geometry.setAttribute('aTarget',new THREE.BufferAttribute(targets,1));geometry.setAttribute('aProgress',new THREE.BufferAttribute(progress,1));
     const material=new THREE.ShaderMaterial({vertexShader:LINE_VERTEX,fragmentShader:LINE_FRAGMENT,
       uniforms:{...this.commonUniforms(),uColor:{value:new THREE.Color(active?'#efd38b':'#6b808f')},uOpacity:{value:active?.85:.032}},
       transparent:true,depthWrite:false,blending:active?THREE.AdditiveBlending:THREE.NormalBlending});
@@ -474,14 +524,15 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
 
   private createParticles(curves:ActualCurve[],active:boolean):THREE.Points{
     const repeats=active?2:1,count=curves.length*repeats,arrays=Array.from({length:4},()=>new Float32Array(count*3));
-    const phase=new Float32Array(count),speed=new Float32Array(count);let i=0;
+    const phase=new Float32Array(count),speed=new Float32Array(count),sources=new Float32Array(count),targets=new Float32Array(count);let i=0;
     for(const curve of curves)for(let copy=0;copy<repeats;copy++){
       curve.a.toArray(arrays[0],i*3);curve.b.toArray(arrays[1],i*3);curve.c.toArray(arrays[2],i*3);curve.d.toArray(arrays[3],i*3);
-      phase[i]=(curve.source*.618033+curve.target*.41421+copy*.5)%1;speed[i]=Math.min(2,Math.max(.3,900/curve.length));i++;
+      phase[i]=(curve.source*.618033+curve.target*.41421+copy*.5)%1;speed[i]=Math.min(2,Math.max(.3,900/curve.length));sources[i]=curve.source;targets[i]=curve.target;i++;
     }
     const geometry=new THREE.BufferGeometry();geometry.setAttribute('position',new THREE.BufferAttribute(new Float32Array(count*3),3));
     for(let k=0;k<4;k++)geometry.setAttribute(['aStart','aC1','aC2','aEnd'][k],new THREE.BufferAttribute(arrays[k],3));
     geometry.setAttribute('aPhase',new THREE.BufferAttribute(phase,1));geometry.setAttribute('aSpeed',new THREE.BufferAttribute(speed,1));
+    geometry.setAttribute('aSource',new THREE.BufferAttribute(sources,1));geometry.setAttribute('aTarget',new THREE.BufferAttribute(targets,1));
     const material=new THREE.ShaderMaterial({vertexShader:PARTICLE_VERTEX,fragmentShader:PARTICLE_FRAGMENT,
       uniforms:{...this.commonUniforms(),uDpr:{value:this.dpr},uSize:{value:active?4.3:2.2},uOpacity:{value:active?.95:.38}},transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
     const particles=new THREE.Points(geometry,material);particles.frustumCulled=false;return particles;
@@ -490,20 +541,19 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
   private updateHighlight(forceId?:string):void{
     const pageIds=new Set(this.neighborhood?.neighborIds??[]);
     const contextId=this.neighborhood?.id;
-    const hoverSource=this.hoveredId&&this.hoveredId!==contextId&&!pageIds.has(this.hoveredId)?this.hoveredId:null;
-    const id=forceId??hoverSource??contextId??this.hoveredId??this.activeId;
+    const id=forceId??contextId??this.hoveredId??this.activeId;
     const signature=`${id??''}|${contextId??''}|${this.neighborhood?.page??0}|${this.hoveredId??''}`;
     if(this.highlightSignature===signature)return;this.highlightSignature=signature;
     this.highlightId=id;
     this.updateBaseOpacity();
-    for(const object of [this.highlight,this.activeParticles])if(object){this.graph.remove(object);object.geometry.dispose();(object.material as THREE.Material).dispose();}
-    this.highlight=null;this.activeParticles=null;
+    for(const object of [this.highlight,this.activeParticles,this.quietIncident,this.quietParticles])if(object){this.graph.remove(object);object.geometry.dispose();(object.material as THREE.Material).dispose();}
+    this.highlight=null;this.activeParticles=null;this.quietIncident=null;this.quietParticles=null;
     if(this.nodeHeat&&this.pointHeat){
       (this.nodeHeat.array as Float32Array).fill(0);(this.pointHeat.array as Float32Array).fill(0);
       if(id){
         for(const neighbor of this.adjacency.get(id)??[]){
-          if(id===contextId&&!pageIds.has(neighbor))continue;
-          const i=this.indices.get(neighbor)!;this.nodeHeat.setX(i,1);this.pointHeat.setX(i,1);
+          const i=this.indices.get(neighbor)!,heat=id===contextId&&!pageIds.has(neighbor) ? .25 : 1;
+          this.nodeHeat.setX(i,heat);this.pointHeat.setX(i,heat);
         }
         const index=this.indices.get(id);if(index!==undefined){this.nodeHeat.setX(index,2);this.pointHeat.setX(index,2);}
         if(this.hoveredId){const hover=this.indices.get(this.hoveredId);if(hover!==undefined){this.nodeHeat.setX(hover,2);this.pointHeat.setX(hover,2);}}
@@ -511,11 +561,17 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
       this.nodeHeat.needsUpdate=true;this.pointHeat.needsUpdate=true;
     }
     const index=id?this.indices.get(id):undefined;
-    if(index!==undefined){const curves=this.curves.filter(c=>{
-        if(c.source!==index&&c.target!==index)return false;
-        return id!==contextId||pageIds.has(this.nodes[c.source===index?c.target:c.source].id);
-      });
-      this.highlight=this.createLines(curves,true);this.activeParticles=this.createParticles(curves,true);this.graph.add(this.highlight,this.activeParticles);}
+    if(index!==undefined){
+      const all=this.curves.filter(c=>c.source===index||c.target===index);
+      const curves=id===contextId?all.filter(c=>pageIds.has(this.nodes[c.source===index?c.target:c.source].id)):all;
+      const quiet=id===contextId?all.filter(c=>!pageIds.has(this.nodes[c.source===index?c.target:c.source].id)):[];
+      this.highlight=this.createLines(curves,true);this.activeParticles=this.createParticles(curves,true);this.graph.add(this.highlight,this.activeParticles);
+      if(quiet.length){
+        this.quietIncident=this.createLines(quiet,true);(this.quietIncident.material as THREE.ShaderMaterial).uniforms['uOpacity'].value=.18;
+        this.quietParticles=this.createParticles(quiet,false);(this.quietParticles.material as THREE.ShaderMaterial).uniforms['uOpacity'].value=.3;
+        this.graph.add(this.quietIncident,this.quietParticles);
+      }
+    }
     this.lastProjection=0;this.requestDraw();
   }
 
@@ -528,7 +584,6 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
       if(material?.uniforms?.['uHeight'])material.uniforms['uHeight'].value=this.height;
       if(material?.uniforms?.['uDpr'])material.uniforms['uDpr'].value=this.dpr;});
     if(!this.started&&this.nodes.length)this.startView();
-    else if(this.neighborhood)this.setNeighborhood(this.neighborhood.id,this.neighborhood.page,false);
     this.lastProjection=0;this.requestDraw();
   }
 
@@ -571,15 +626,19 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
       position.z+Math.sin(position.x*.0013+position.y*.0011+t*.265)*8*m);
   }
 
+  private runtimePosition(index:number,out:THREE.Vector3):THREE.Vector3{
+    out.copy(this.positions[index]).add(this.currentOffsets[index]);return this.flowing(out,out);
+  }
+
   private updateProjection(now:number):void{
     if(!this.controls||!this.width||!this.height)return;
     this.camera.updateMatrixWorld();this.inverseView.copy(this.camera.matrixWorldInverse);
     const focal=this.height/(2*Math.tan(THREE.MathUtils.degToRad(this.camera.fov/2)));
     this.projected=[];
     for(let i=0;i<this.nodes.length;i++){
-      this.flowing(this.positions[i],this.temp);this.viewTemp.copy(this.temp).applyMatrix4(this.inverseView);const depth=-this.viewTemp.z;if(depth<5)continue;
+      this.runtimePosition(i,this.temp);this.viewTemp.copy(this.temp).applyMatrix4(this.inverseView);const depth=-this.viewTemp.z;if(depth<5)continue;
       this.ndc.copy(this.temp).project(this.camera);if(this.ndc.z>1||this.ndc.z< -1)continue;
-      const x=(this.ndc.x*.5+.5)*this.width,y=(-this.ndc.y*.5+.5)*this.height,h=Math.min(276,COVER_H*focal/depth),w=h*COVER_W/COVER_H;
+      const x=(this.ndc.x*.5+.5)*this.width,y=(-this.ndc.y*.5+.5)*this.height,h=this.neighborhood?COVER_H*focal/depth:Math.min(276,COVER_H*focal/depth),w=h*COVER_W/COVER_H;
       if(x+w/2<0||y+h/2<0||x-w/2>this.width||y-h/2>this.height)continue;
       this.projected.push({index:i,id:this.nodes[i].id,x,y,w,h,depth});
     }
@@ -594,11 +653,11 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
       chosen.push(p);
     }
     if(this.neighborhood){
-      const depth=this.camera.position.distanceTo(this.controls.target);
-      for(const card of this.renderedNeighborhoodCards(now))chosen.push({index:this.indices.get(card.id)!,id:card.id,x:card.x,y:card.y,w:card.w,h:card.h,depth});
+      const wanted=new Set(this.neighborhood.targets.map(t=>t.id));
+      chosen.push(...this.projected.filter(p=>wanted.has(p.id)).sort((a,b)=>Number(b.id===this.neighborhood!.id)-Number(a.id===this.neighborhood!.id)||this.neighborhood!.neighborIds.indexOf(a.id)-this.neighborhood!.neighborIds.indexOf(b.id)));
     }
     this.foreground=chosen;
-    if(this.cardVisibility){(this.cardVisibility.array as Float32Array).fill(0);if(!this.neighborhood)for(const p of chosen)this.cardVisibility.setX(p.index,1);this.cardVisibility.needsUpdate=true;}
+    if(this.cardVisibility){(this.cardVisibility.array as Float32Array).fill(0);if(!this.neighborhood)for(const p of chosen)this.cardVisibility.setX(p.index,this.details.has(p.id)?0:1);this.cardVisibility.needsUpdate=true;}
     this.syncDetails(chosen);this.lastProjection=now;
     if(now-this.lastDom>200){
       const covers=chosen.slice().sort((a,b)=>a.y-b.y||a.x-b.x).map(p=>({id:p.id,label:`${this.typeLabel(this.nodes[p.index].type)}. ${this.nodes[p.index].label}. Связей: ${this.nodes[p.index].degree}. Выбрать узел на карте.`,x:p.x-p.w/2,y:p.y-p.h/2,w:p.w,h:p.h}));
@@ -619,41 +678,13 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
     }
   }
 
-  /** Camera-facing reading callouts, each tethered to its unchanged actual 3D node. */
-  private renderedNeighborhoodCards(now:number):NeighborhoodCard[]{
-    if(!this.neighborhood)return[];
-    const t=this.reduced?1:Math.min(1,Math.max(0,(now-this.calloutTransitionStart)/480)),ease=1-Math.pow(1-t,3);
-    return this.neighborhood.cards.map(target=>{
-      const from=this.calloutFrom.get(target.id);if(!from||t===1)return target;
-      return{...target,x:from.x+(target.x-from.x)*ease,y:from.y+(target.y-from.y)*ease,
-        w:from.w+(target.w-from.w)*ease,h:from.h+(target.h-from.h)*ease};
-    });
-  }
-
-  private updateNeighborhoodTargets(now:number):void{
-    this.overlayTargets.clear();if(!this.neighborhood||!this.controls)return;
-    this.camera.updateMatrixWorld();this.right.setFromMatrixColumn(this.camera.matrixWorld,0);this.up.setFromMatrixColumn(this.camera.matrixWorld,1);
-    this.camera.getWorldDirection(this.forward);
-    const depth=Math.min(this.camera.position.distanceTo(this.controls.target),Math.max(900,this.radius*.75));
-    const focal=this.height/(2*Math.tan(THREE.MathUtils.degToRad(this.camera.fov/2)));
-    const positions=this.neighborhoodTethers?.geometry.getAttribute('position') as THREE.BufferAttribute|undefined;
-    const cards=this.renderedNeighborhoodCards(now);
-    for(let i=0;i<cards.length;i++){
-      const card=cards[i];
-      const position=this.camera.position.clone().addScaledVector(this.forward,depth)
-        .addScaledVector(this.right,(card.x-this.width/2)*depth/focal).addScaledVector(this.up,(this.height/2-card.y)*depth/focal);
-      this.overlayTargets.set(card.id,{position,scale:new THREE.Vector3(card.w*depth/focal,card.h*depth/focal,1)});
-      if(positions){position.toArray(positions.array as Float32Array,i*6);this.flowing(this.positions[this.indices.get(card.id)!],this.temp).toArray(positions.array as Float32Array,i*6+3);}
-    }
-    if(positions){positions.needsUpdate=true;this.neighborhoodTethers!.computeLineDistances();}
-  }
-
   private attachDetail(p:ProjectedNode,texture:THREE.CanvasTexture):void{
-    // This is the decluttered foreground: paper must never fail a coplanar depth
-    // test against its low-resolution atlas placeholder (CPU/GPU wave rounding).
-    const node=this.nodes[p.index],material=new THREE.SpriteMaterial({map:texture,transparent:true,opacity:0,depthWrite:false,depthTest:false,toneMapped:false});
+    // Focused paper occupies real 3D space; its atlas instance is disabled, so
+    // normal depth testing works without the earlier coplanar placeholder conflict.
+    const node=this.nodes[p.index],material=new THREE.SpriteMaterial({map:texture,transparent:true,opacity:0,depthWrite:true,depthTest:true,toneMapped:false});
     const sprite=new THREE.Sprite(material);sprite.renderOrder=3;sprite.frustumCulled=false;
     this.details.set(p.id,{sprite,texture,material,node});this.graph.add(sprite);
+    if(this.cardVisibility){this.cardVisibility.setX(p.index,0);this.cardVisibility.needsUpdate=true;}
   }
 
   private buildSourceFrame():void{
@@ -664,7 +695,7 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
       ctx.beginPath();ctx.moveTo(x,y+sy*10);ctx.lineTo(x,y);ctx.lineTo(x+sx*10,y);ctx.stroke();
     }
     this.sourceFrameTexture=new THREE.CanvasTexture(canvas);this.sourceFrameTexture.colorSpace=THREE.SRGBColorSpace;
-    const material=new THREE.SpriteMaterial({map:this.sourceFrameTexture,transparent:true,opacity:0,depthWrite:false,depthTest:false,toneMapped:false});
+    const material=new THREE.SpriteMaterial({map:this.sourceFrameTexture,transparent:true,opacity:0,depthWrite:false,depthTest:true,toneMapped:false});
     this.sourceFrame=new THREE.Sprite(material);this.sourceFrame.renderOrder=5;this.sourceFrame.frustumCulled=false;this.graph.add(this.sourceFrame);
   }
 
@@ -730,6 +761,7 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
     const dt=this.lastFrame?Math.min(60,now-this.lastFrame)/1000:1/60;this.lastFrame=now;
     const ambient=!this.motionPaused&&!this.reduced;
     if(ambient)this.elapsed+=dt;this.timeUniform.value=this.elapsed;
+    const offsetsMoving=this.updateRuntimeOffsets(now);
     if(this.flight){
       const f=this.flight,t=Math.min(1,(now-f.started)/f.duration),ease=t*t*(3-2*t);
       this.camera.position.lerpVectors(f.fromEye,f.toEye,ease);this.controls.target.lerpVectors(f.fromTarget,f.toTarget,ease);
@@ -738,21 +770,24 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
     this.controls.autoRotate=ambient&&!this.flight&&!this.neighborhood&&this.camera.position.distanceTo(this.controls.target)>this.radius*1.2;
     this.controls.update(dt);
     this.updateBaseOpacity();
-    const calloutsMoving=!!this.neighborhood&&!this.reduced&&now-this.calloutTransitionStart<480;
-    if(now-this.lastProjection>90||this.flight||this.controlsMoving||calloutsMoving)this.updateProjection(now);
-    this.updateNeighborhoodTargets(now);
+    const moving=!!this.flight||offsetsMoving;
+    if(this.layoutMoving!==moving){this.layoutMoving=moving;this.zone.run(()=>this.cdr.markForCheck());}
+    if(now-this.lastProjection>90||this.flight||this.controlsMoving||offsetsMoving)this.updateProjection(now);
     this.buildOneDetail();
     const focal=this.height/(2*Math.tan(THREE.MathUtils.degToRad(this.camera.fov/2)));
     for(const [id,detail]of this.details){
-      const overlay=this.overlayTargets.get(id),grow=id===this.hoveredId?1.022:1;
-      if(overlay){detail.sprite.position.copy(overlay.position);detail.sprite.scale.copy(overlay.scale).multiplyScalar(grow);}
+      const index=this.indices.get(id)!;this.runtimePosition(index,detail.sprite.position);
+      if(this.neighborhood){detail.sprite.scale.set(COVER_W,COVER_H,1);}
       else{
-        const index=this.indices.get(id)!;this.flowing(this.positions[index],detail.sprite.position);
+        const grow=id===this.hoveredId?1.022:1;
         this.viewTemp.copy(detail.sprite.position).applyMatrix4(this.camera.matrixWorldInverse);const depth=-this.viewTemp.z;
         const cap=Math.min(1,276/(COVER_H*focal/Math.max(1,depth)));
         detail.sprite.scale.set(COVER_W*cap*grow,COVER_H*cap*grow,1);
       }
       detail.material.opacity=this.reduced?1:Math.min(1,detail.material.opacity+dt*4);
+      // After its arrival, paper belongs in the opaque depth pass. Real edges
+      // and points in front remain visible; those behind are naturally occluded.
+      if(detail.material.opacity===1&&detail.material.transparent){detail.material.transparent=false;detail.material.needsUpdate=true;}
       detail.material.color.set(id===this.hoveredId||id===this.activeId?0xffffff:0xdddfe0);
     }
     let frameMoving=false;
@@ -766,6 +801,6 @@ export class NetworkComponent implements AfterViewInit, OnChanges, OnDestroy {
     }
     this.renderer.render(this.scene,this.camera);
     const damping=now-this.lastControlChange<900;
-    if(ambient||this.flight||this.controlsMoving||damping||frameMoving||calloutsMoving||this.pendingDetails.length||[...this.details.values()].some(d=>d.material.opacity<1))this.requestDraw();
+    if(ambient||this.flight||this.controlsMoving||damping||frameMoving||offsetsMoving||this.pendingDetails.length||[...this.details.values()].some(d=>d.material.opacity<1))this.requestDraw();
   }
 }
