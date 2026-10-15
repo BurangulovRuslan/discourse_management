@@ -1,0 +1,109 @@
+<a class="skip-link" href="#map">К карте</a>
+<div class="atlas-app" [attr.inert]="dialogOpen()?'':null">
+  <header class="masthead">
+    <a class="wordmark" href="./" aria-label="Атлас дискурса — главная"><span class="wordmark-sign" aria-hidden="true">✳</span><strong>АТЛАС<span> / </span></strong><span class="wordmark-caption">АРХИВ ДИСКУРСА<br>АНДРЕЯ КУРПАТОВА</span></a>
+    <nav aria-label="Навигация по атласу"><button (click)="openIndex()">Указатель<sup>{{nodes().length | number}}</sup></button><button (click)="openIndex('saved')" class="collection-link"><ui-icon name="bookmark"/><span>Коллекция</span><sup>{{saved().length}}</sup></button><button (click)="openAbout()" class="about-link">Об издании</button><a href="legacy.html" class="legacy-link">Legacy<ui-icon name="diagonal"/></a></nav>
+    <button class="header-search" aria-label="Поиск по атласу" (click)="openIndex()"><ui-icon name="search"/><kbd>Ctrl K</kbd></button>
+  </header>
+  <main id="map" class="map-workspace" [class.has-selection]="!!selected()" tabindex="-1">
+    @if(loadError()){
+      <section class="load-state" role="alert"><span>×</span><h1>Карта не загрузилась</h1><p>Проверьте соединение и повторите попытку.</p><button class="solid-button" (click)="load()">Попробовать ещё раз<ui-icon name="arrow"/></button><a href="legacy.html">Открыть Legacy</a></section>
+    } @else if(!data()){
+      <section class="load-state" role="status"><span class="loading-sign">✳</span><h1>Собираем связи.</h1><p>50 книг. Одно пространство мысли.</p></section>
+    } @else {
+      <h1 class="sr-only">Атлас дискурса — единый объёмный граф материалов</h1>
+      <app-network class="network-surface" [nodes]="nodes()" [edges]="edges()" [activeId]="selectedId()" [focusId]="focusId()" [neighborhoodPage]="neighborhoodPage()" [zoomAction]="zoomAction()" [motionPaused]="!motionEnabled()||dialogOpen()" (nodeSelect)="select($event)" (neighborhoodChange)="neighborhoodChanged($event)"/>
+      <div class="map-caption" aria-hidden="true"><span class="archive-indicator"></span><span>РИЗОМА / 3D</span><i></i><span>50 КНИГ / 2002—2026</span></div>
+      <p class="map-gesture-hint"><span>{{selected()?'ПУТЕШЕСТВУЙТЕ ПО СВЯЗЯМ':'ИССЛЕДУЙТЕ СВЯЗИ'}}</span>{{selected()?'Выберите связанную обложку, чтобы продолжить.':'Выберите обложку — камера приблизится к ней.'}}<br>Вращение — мышь · Перемещение — Shift + мышь</p>
+      @if(selected();as node){
+        <aside class="focus-panel" aria-labelledby="focus-title">
+          <div class="focus-panel-top"><span class="micro">МАРШРУТ ЧТЕНИЯ</span><button class="icon-button" aria-label="Снять выбор узла" (click)="clearSelection()"><ui-icon name="close"/></button></div>
+          <span class="focus-type micro">{{types[node.type]}}</span><h2 id="focus-title">{{node.label}}</h2>
+          <p class="focus-counts"><span><b>{{node.degree | number}}</b> {{connectionLabel(node.degree)}}</span><i></i><span><b>{{related().length | number}}</b> {{plural(related().length,['сосед','соседа','соседей'])}}</span></p>
+          <div class="focus-actions"><button class="focus-read" (click)="openJournal(node.id)">Читать материал<ui-icon name="arrow"/></button><button class="focus-save" [attr.aria-label]="saved().includes(node.id)?'Удалить из коллекции':'Сохранить в коллекцию'" [attr.aria-pressed]="saved().includes(node.id)" (click)="toggleSave(node.id)"><ui-icon [name]="saved().includes(node.id)?'check':'bookmark'"/></button></div>
+          <nav class="neighborhood-pager" aria-label="Связанные обложки"><button aria-label="Предыдущие связанные обложки" [disabled]="neighborhoodPage()===0" (click)="turnNeighborhood(-1)"><ui-icon name="arrow"/></button><span aria-live="polite"><span class="pager-label">Крупно</span> {{neighborFirst()}}—{{neighborLast()}} <small>из {{related().length}}</small></span><button aria-label="Следующие связанные обложки" [disabled]="neighborhoodPage()+1>=neighborhoodPages()" (click)="turnNeighborhood(1)"><ui-icon name="arrow"/></button></nav>
+          <p class="focus-note">Все связи узла остаются в графе. Стрелки перелистывают крупные обложки.</p>
+        </aside>
+      }
+      <div class="camera-controls" role="group" aria-label="Управление картой"><button aria-label="Увеличить карту" (click)="mapAction('in')"><ui-icon name="plus"/></button><button aria-label="Уменьшить карту" (click)="mapAction('out')"><ui-icon name="minus"/></button><span></span><button class="camera-text" aria-label="Вместить всю карту" (click)="mapAction('fit')"><ui-icon name="reset"/><span>Вся карта</span></button><button class="camera-text camera-read" (click)="startReading()"><span>Читать карту</span><ui-icon name="diagonal"/></button></div>
+    }
+  </main>
+  <footer class="map-status"><span class="status-title"><i></i> ВЕСЬ АРХИВ</span><span>{{nodes().length | number}} УЗЛОВ <b> / </b> {{edges().length | number}} СВЯЗЕЙ</span><div class="edge-legend"><span><i></i>Текстовая отсылка</span><span><i></i>Аналитическая связь</span></div><button class="motion-switch" [attr.aria-pressed]="motionEnabled()" [attr.aria-label]="motionEnabled()?'Приостановить движение карты':'Включить движение карты'" (click)="motionEnabled.set(!motionEnabled())"><span class="motion-symbol" [class.paused]="!motionEnabled()" aria-hidden="true">≈</span><span>{{motionEnabled()?'Движение':'Пауза'}}</span></button></footer>
+</div>
+
+@if(indexOpen()){
+  <div class="dialog-backdrop" (click)="closeDialog()"><section id="index-dialog" class="index-dialog" role="dialog" aria-modal="true" aria-labelledby="index-title" (click)="$event.stopPropagation()">
+    <div class="dialog-topline"><span class="micro">ПОИСК ПО СВЯЗАННОМУ АРХИВУ</span><button class="icon-button" aria-label="Закрыть указатель" (click)="closeDialog()"><ui-icon name="close"/></button></div>
+    <h2 id="index-title">Найти смысл<span>_</span></h2>
+    <label class="index-search"><ui-icon name="search"/><input #indexInput type="search" aria-label="Поиск узлов и цитат" placeholder="Например: как устроено мышление…" [value]="query()" (input)="updateQuery($any($event.target).value)"><kbd>ESC</kbd></label>
+    <div class="search-capabilities"><span>ФОРМЫ СЛОВ</span><span>ОПЕЧАТКИ</span><span>БЛИЗКИЕ ПОНЯТИЯ</span><span class="local-search-indicator">ЛОКАЛЬНЫЙ ПОИСК</span></div>
+    <div class="index-tabs" role="group" aria-label="Раздел указателя"><button [class.active]="indexMode()==='all'" [attr.aria-pressed]="indexMode()==='all'" (click)="changeIndex('all')">Материалы <sup>{{nodes().length | number}}</sup></button><button [class.active]="indexMode()==='books'" [attr.aria-pressed]="indexMode()==='books'" (click)="changeIndex('books')">Книги <sup>50</sup></button><button [class.active]="indexMode()==='quotes'" [attr.aria-pressed]="indexMode()==='quotes'" (click)="changeIndex('quotes')">Цитаты <sup>5370</sup></button><button [class.active]="indexMode()==='saved'" [attr.aria-pressed]="indexMode()==='saved'" (click)="changeIndex('saved')">Коллекция <sup>{{saved().length}}</sup></button></div>
+    <div class="index-scroll">
+      @if(dossierLoading()||contextSearchLoading()){<p class="index-message" role="status">Подключаем полный контекст материалов…</p>}
+      @if(dossierError()){<p class="index-message">Полный контекст не загрузился. <button (click)="loadDossiers()">Повторить</button></p>}
+      @if(query().trim()&&searchInterpretation().expandedTerms.length){<div class="search-interpretation" aria-live="polite"><span class="micro">БЛИЗКИЕ ПОНЯТИЯ</span><p>{{searchInterpretation().summary}}</p></div>}
+      @if(indexMode()!=='quotes'){<div class="index-count micro" aria-live="polite">{{indexedNodes().length | number}} {{plural(indexedNodes().length,['материал','материала','материалов'])}}</div>}
+      @for(hit of nodeHits().slice(0,visibleLimit());track hit.id){<button class="index-item" (click)="select(hit.item.id)"><span class="index-item-number">{{serial(hit.item)}}</span><span class="index-item-content"><span class="micro">{{types[hit.item.type]}} @if(query()){<span class="match-kind">{{hit.explanation}}</span>}</span><strong>{{hit.item.label}}</strong>@if(query()&&hit.parts.length){<span class="search-snippet">@for(part of hit.parts;track $index){<span [class.search-match]="part.match">{{part.text}}</span>}</span>}<small>{{hit.item.degree}} {{connectionLabel(hit.item.degree)}} <span> / </span> {{hit.item.books.length}} {{bookLabel(hit.item.books.length)}}</small></span><ui-icon name="diagonal"/></button>}
+      @if(indexedNodes().length>visibleLimit()){<button class="load-more" (click)="more('nodes')">Ещё 40 материалов<ui-icon name="plus"/></button>}
+      @if(!indexedNodes().length&&indexMode()!=='quotes'){<div class="empty-state"><h3>{{indexMode()==='saved'&&!query()?'Ваша коллекция начинается здесь.':dossierLoading()?'Ищем в полном контексте…':'Материалы не найдены.'}}</h3><p>{{indexMode()==='saved'&&!query()?'Откройте любой узел и сохраните его в коллекцию.':dossierLoading()?'Результаты появятся после подключения материалов.':'Попробуйте другую формулировку или проверьте цитаты ниже.'}}</p></div>}
+      @if(indexMode()==='quotes'&&query().trim().length<2){<p class="index-message">Введите понятие или фрагмент фразы, чтобы найти цитаты во всех 50 книгах.</p>}
+      @if(query().trim().length>1&&(indexMode()==='all'||indexMode()==='quotes')){
+        @if(searchLoading()){<p class="index-message" role="status">Подключаем поиск по цитатам…</p>}
+        @if(searchError()){<p class="index-message">Цитаты не загрузились. <button (click)="loadSearch()">Повторить</button></p>}
+        @if(quoteHits().length){<div class="index-count micro">В ЦИТАТАХ / {{quoteHits().length>quoteResultLimit()?quoteResultLimit():quoteHits().length}}{{quoteHits().length>quoteResultLimit()?'+':''}}</div>@for(hit of quoteHits().slice(0,quoteResultLimit());track hit.id){<a class="index-quote" [href]="hit.item.url" target="_blank" rel="noopener"><span class="quote-match-kind">{{hit.explanation}}</span><blockquote>@for(part of hit.parts;track $index){<span [class.search-match]="part.match">{{part.text}}</span>}</blockquote>@if(hit.item.author){<span class="quote-voice">Автор фрагмента: {{hit.item.author}}</span>}<span class="micro">{{bookTitle(hit.item.book)}} · {{hit.item.locator}}<ui-icon name="diagonal"/></span></a>}}
+        @if(quoteHits().length>quoteResultLimit()){<button class="load-more" (click)="more('quoteResults')">Ещё 20 цитат<ui-icon name="plus"/></button>}
+        @if(!quoteHits().length&&searchLoaded()&&indexMode()==='quotes'){<div class="empty-state"><h3>Цитаты не найдены.</h3><p>Попробуйте другую формулировку.</p></div>}
+      }
+    </div><div class="index-footnote">4698 материалов · 5370 цитат · Запрос обрабатывается в вашем браузере</div>
+  </section></div>
+}
+
+@if(journalOpen()&&selected();as node){
+  <div class="journal-backdrop" (click)="closeDialog()"><article id="journal-dialog" class="journal-dialog" role="dialog" aria-modal="true" aria-labelledby="journal-title" (click)="$event.stopPropagation()">
+    <header class="journal-toolbar"><span class="journal-brand">атлас / <span>МАТЕРИАЛ {{serial(node)}}</span></span><div><button aria-label="Показать узел на карте" (click)="showOnMap()"><ui-icon name="map"/><span>На карте</span></button><button [attr.aria-label]="saved().includes(node.id)?'Удалить из коллекции':'Сохранить в коллекцию'" [attr.aria-pressed]="saved().includes(node.id)" (click)="toggleSave(node.id)"><ui-icon [name]="saved().includes(node.id)?'check':'bookmark'"/><span>{{saved().includes(node.id)?'Сохранено':'Сохранить'}}</span></button><button aria-label="Закрыть материал" (click)="closeDialog()"><ui-icon name="close"/></button></div></header>
+    <div id="journal-scroll" class="journal-scroll">
+      <section class="journal-cover">
+        <div class="cover-editorial"><span class="micro">{{types[node.type]}} <span> / </span> {{node.id}}</span><h1 id="journal-title" tabindex="-1">{{node.label}}</h1><div class="cover-editorial-rule"></div><div class="cover-statistics"><div><b>{{node.degree | number}}</b><span>{{connectionLabel(node.degree)}}</span></div><div><b>{{node.books.length}}</b><span>{{bookLabel(node.books.length)}} в контексте</span></div>@if(selectedBook();as book){<div><b>{{book.year || '—'}}</b><span>год издания</span></div>}</div><span class="cover-issue">СВЯЗАННОЕ ИЗДАНИЕ <span>№ {{serial(node)}}</span></span></div>
+        <div class="cover-image"><app-node-cover [node]="node" [nodes]="nodes()" [edges]="edges()"/><span class="image-caption">ASCII / ОБРАЗ УЗЛА <span>↗ {{related().length}} СОСЕДНИХ УЗЛОВ</span></span></div>
+      </section>
+      <nav class="journal-contents" aria-label="Разделы материала"><span class="micro">В ЭТОМ МАТЕРИАЛЕ</span><button (click)="scrollArticle('article-context')">01 / Контекст</button><button (click)="scrollArticle('article-evidence')">02 / Цитаты</button><button (click)="scrollArticle('article-connections')">03 / Связи</button></nav>
+      <div class="article-body">
+        <section id="article-context" class="article-context"><div class="section-kicker"><span>01</span><h2>Контекст</h2></div>
+          @if(dossierLoading()){<p class="article-loading" role="status">Открываем полную версию материала…</p>}
+          @if(dossierError()){<p class="article-loading">Не удалось загрузить полный материал. <button (click)="loadDossiers()">Повторить</button></p>}
+          @if(articleIntro()){<div class="article-lead">@for(paragraph of articleParagraphs();track $index){<p>{{paragraph}}</p>}</div>}
+          @for(section of articleSections();track $index){<div class="article-section"><h3>{{section.label}}</h3>@for(paragraph of paragraphs(section.text,section.paragraphs);track $index){<p>{{paragraph}}</p>}</div>}
+          @if(!articleIntro()&&!articleSections().length&&!dossierLoading()){<p class="article-lead">Этот узел раскрывается через цитаты и связи с другими материалами корпуса.</p>}
+          @if(sourceBooks().length){<div class="source-books"><span class="micro">КНИГИ В КОНТЕКСТЕ</span><div>@for(book of sourceBooks();track book.id){<button (click)="select(book.id)">{{book.title}}<small>{{book.year || 'б. д.'}}</small><ui-icon name="diagonal"/></button>}</div></div>}
+        </section>
+        <section id="article-evidence" class="article-evidence"><div class="section-kicker"><span>02</span><h2>Голос источника</h2><span class="section-total">{{selectedRefs().length}}{{!searchLoaded()?'+':''}} ОПОР</span></div>
+          @if(searchLoading()){<p class="article-loading" role="status">Загружаем все цитатные опоры…</p>}
+          @if(searchError()){<p class="article-loading">Полный индекс цитат не загрузился. <button (click)="loadSearch()">Повторить</button></p>}
+          <div class="evidence-grid">@for(ref of selectedRefs().slice(0,quoteLimit());track refKey(ref);let i=$index){<figure class="evidence-card"><span class="micro">ФРАГМЕНТ / {{(i+1).toString().padStart(2,'0')}}</span><blockquote>@for(paragraph of paragraphs(ref.excerpt,ref.paragraphs);track $index;let first=$first;let last=$last){<p>{{first?'«':''}}{{paragraph}}{{last?'»':''}}</p>}</blockquote>@if(ref.author){<p class="quote-voice">Автор фрагмента: {{ref.author}}</p>}@if(ref.note){<p class="quote-note">{{ref.note}}</p>}<figcaption><a [href]="ref.url" target="_blank" rel="noopener">{{bookTitle(ref.book)}}<span>{{ref.locator}}<ui-icon name="diagonal"/></span></a></figcaption></figure>}</div>
+          @if(selectedRefs().length>quoteLimit()){<button class="article-more" (click)="more('quotes')">Ещё цитатные опоры <span>{{selectedRefs().length-quoteLimit()}} осталось</span><ui-icon name="plus"/></button>}
+          @if(!selectedRefs().length&&searchLoaded()){<p class="article-empty">Для этого узла отдельные цитатные фрагменты не размечены. Его контекст можно проследить по соседним материалам.</p>}
+        </section>
+        <section id="article-connections" class="article-connections"><div class="section-kicker"><span>03</span><h2>Продолжение мысли</h2><span class="section-total">{{related().length}} МАТЕРИАЛОВ</span></div><p class="connections-intro">Реальные соседние узлы. Выберите связь, чтобы продолжить чтение.</p>
+          <div class="connection-gallery">@for(row of related().slice(0,connectionLimit());track row.node.id;let i=$index){<button class="connection-cover" [class]="'connection-cover cover-tone-'+(i%3)" (click)="select(row.node.id)"><span class="micro">{{types[row.node.type]}}<ui-icon name="diagonal"/></span><span class="connection-decoration" aria-hidden="true">{{(i+1).toString().padStart(2,'0')}}</span><h3>{{row.node.label}}</h3>@if(row.relation){<p>{{row.relation}}</p>}<span class="connection-evidence"><i [class.dashed]="row.analytical"></i>{{row.evidence}}</span></button>}</div>
+          @if(related().length>connectionLimit()){<button class="article-more" (click)="more('connections')">Продолжить галерею <span>{{related().length-connectionLimit()}} осталось</span><ui-icon name="plus"/></button>}
+          @if(!related().length){<p class="article-empty">У этого узла пока нет размеченных связей.</p>}
+        </section>
+        <footer class="journal-footer"><div><span class="micro">МЫСЛЬ НЕ ЗАКАНЧИВАЕТСЯ НА СТРАНИЦЕ</span><h2>Вернуться<br><em>к связям.</em></h2></div><button class="solid-button" (click)="showOnMap()">Показать узел на карте<ui-icon name="diagonal"/></button><div class="journal-share"><button (click)="copyLink()">{{shareState() || 'Скопировать ссылку на материал'}}<ui-icon name="arrow"/></button>@if(shareFallback()){<input aria-label="Ссылка на материал" [value]="shareFallback()" readonly (focus)="$any($event.target).select()">}</div></footer>
+      </div>
+    </div>
+  </article></div>
+}
+
+@if(aboutOpen()){
+  <div class="dialog-backdrop" (click)="closeDialog()"><section id="about-dialog" class="about-dialog" role="dialog" aria-modal="true" aria-labelledby="about-title" (click)="$event.stopPropagation()">
+    <div class="dialog-topline"><span class="micro">ОБ АРХИВЕ</span><button id="about-close" class="icon-button" aria-label="Закрыть описание" (click)="closeDialog()"><ui-icon name="close"/></button></div>
+    <span class="about-symbol" aria-hidden="true">✳</span><h2 id="about-title">Архитектура<br><em>мысли.</em></h2><p class="about-lead">50 книг Андрея Курпатова. {{nodes().length | number}} материалов. {{edges().length | number}} связей. Один объёмный граф.</p>
+    <div class="about-section"><span>01</span><div><h3>Единое пространство</h3><p>Каждая обложка — реальный узел корпуса, каждая линия — размеченная связь. Положение рассчитано по структуре графа в трёх измерениях. Вращайте сеть и приближайте интересующие области. Все типы материалов находятся вместе.</p></div></div>
+    <div class="about-section"><span>02</span><div><h3>Личный маршрут чтения</h3><p>Выберите обложку: камера плавно приблизится, а связанные материалы раскроются рядом. Переходите от обложки к обложке; весь граф остаётся на фоне. Стрелки перелистывают соседей, если их много. Кнопка «Читать материал» открывает полный контекст, восстановленные абзацы и цитаты с адресами источников. Уникальный ASCII-образ обложки — визуальная интерпретация материала.</p></div></div>
+    <div class="about-section"><span>03</span><div><h3>Поиск, который понимает форму</h3><p>Введите понятие, вопрос или фрагмент цитаты. Поиск учитывает русские словоформы и опечатки, расширяет запрос близкими понятиями и показывает причину совпадения. Запрос обрабатывается локально в браузере. Платные API и подписка не нужны.</p></div></div>
+    <div class="about-section"><span>04</span><div><h3>Точность источников</h3><p>Сплошная линия — текстовая отсылка; пунктирная — аналитическая реконструкция. Связь сама по себе не доказывает причинность. Источники сохраняют авторский голос и адрес фрагмента.</p></div></div>
+    <a class="solid-button" href="legacy.html">Полные инструменты Legacy<ui-icon name="diagonal"/></a>
+    <a class="reference-credit" href="https://www.behance.net/gallery/58566589/La-Raza-digital-archive" target="_blank" rel="noopener">Визуальный ориентир — La Raza digital archive<ui-icon name="diagonal"/></a>
+    <a class="reference-credit" href="https://www.behance.net/gallery/106310813/CCRU-Trilogy" target="_blank" rel="noopener">Типографика и цифровая графика — CCRU Trilogy<ui-icon name="diagonal"/></a>
+  </section></div>
+}

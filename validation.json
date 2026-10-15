@@ -1,7 +1,7 @@
 {
   "passed": true,
-  "html_pages": 53,
-  "relative_links_checked": 6143,
+  "html_pages": 54,
+  "relative_links_checked": 11934,
   "public_paths_clean": true,
   "original_books_absent": true,
   "inline_roundtrip": true,
@@ -10,5 +10,10 @@
     11441
   ],
   "book_profiles": 50,
+  "explorer_nodes": 4698,
+  "explorer_edges": 11441,
+  "dossiers": 4698,
+  "layout_algorithm": "D3Force3D",
+  "search_quotes": 5370,
   "errors": []
 }
